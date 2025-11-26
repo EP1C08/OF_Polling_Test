@@ -1,0 +1,18 @@
+# OnlyFans API
+ultima-scraper-api>=2.2.45
+
+# HTTP & Async
+aiohttp>=3.9.0
+asyncio
+
+# User Agent Generation
+user-agent>=0.1.10
+
+# Data Processing
+python-dateutil>=2.8.2
+
+# Redis
+redis>=5.0.0
+
+# YAML for docker-compose generation
+pyyaml>=6.0
