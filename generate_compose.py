@@ -1,6 +1,6 @@
-"""
-Dynamic Docker Compose Generator
-Generates docker-compose.yml based on creators in auth_multi.json
+"""Dynamic Docker Compose Generator.
+
+Generates docker-compose.yml based on creators in auth_multi.json.
 """
 
 import json
@@ -9,7 +9,11 @@ from pathlib import Path
 
 
 def load_creators_from_auth(auth_file: str = 'auth_multi.json') -> list:
-    """Load creator info (ID and name) from auth_multi.json"""
+    """Load creator info (ID and name) from auth_multi.json.
+
+    :param auth_file: Path to authentication JSON file
+    :return: List of creator dictionaries with 'id' and 'name' keys
+    """
     with open(auth_file, 'r') as f:
         auth_data = json.load(f)
 
@@ -64,14 +68,17 @@ def load_creators_from_auth(auth_file: str = 'auth_multi.json') -> list:
     return creators
 
 
-def generate_docker_compose(creators: list, mode: str = 'production', output_file: str = None):
-    """
-    Generate docker-compose configuration
+def generate_docker_compose(
+    creators: list,
+    mode: str = 'production',
+    output_file: str = None,
+) -> str:
+    """Generate docker-compose configuration.
 
-    Args:
-        creators: List of creator IDs
-        mode: 'production' or 'test'
-        output_file: Output filename (auto-generated if None)
+    :param creators: List of creator dictionaries with 'id' and 'name' keys
+    :param mode: 'production' or 'test'
+    :param output_file: Output filename (auto-generated if None)
+    :return: Path to generated docker-compose file
     """
 
     is_test = mode == 'test'
@@ -232,10 +239,10 @@ def generate_docker_compose(creators: list, mode: str = 'production', output_fil
     return output_file
 
 
-def main():
+def main() -> None:
+    """Main function to generate docker-compose file from command line."""
     import sys
 
-    # Parse arguments
     mode = 'production'
     auth_file = 'auth_multi.json'
     output_file = None

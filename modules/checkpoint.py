@@ -1,6 +1,6 @@
-"""
-Checkpoint module for tracking and resuming progress
-Saves processed fan IDs so producer can resume from where it left off
+"""Checkpoint module for tracking and resuming progress.
+
+Saves processed fan IDs so producer can resume from where it left off.
 
 Two-phase checkpoint system:
 1. mark_in_progress() - Save BEFORE processing (prevents duplicates)
@@ -32,13 +32,13 @@ from typing import Set, Optional, Dict, List
 
 
 class CheckpointManager:
-    def __init__(self, creator_name: str, checkpoint_dir: str = 'checkpoints'):
-        """
-        Initialize checkpoint manager
+    """Checkpoint manager for tracking and resuming progress."""
 
-        Args:
-            creator_name: Creator's name for checkpoint file naming
-            checkpoint_dir: Directory to store checkpoint files
+    def __init__(self, creator_name: str, checkpoint_dir: str = 'checkpoints'):
+        """Initialize checkpoint manager.
+
+        :param creator_name: Creator's name for checkpoint file naming
+        :param checkpoint_dir: Directory to store checkpoint files
         """
         self.creator_name = creator_name
         self.checkpoint_dir = Path(checkpoint_dir)
@@ -57,11 +57,10 @@ class CheckpointManager:
         # Create checkpoint directory if it doesn't exist
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-        # Load existing checkpoint if available
         self._load_checkpoint()
 
-    def _load_checkpoint(self):
-        """Load checkpoint from file if it exists"""
+    def _load_checkpoint(self) -> None:
+        """Load checkpoint from file if it exists."""
         if self.checkpoint_file.exists():
             try:
                 with open(self.checkpoint_file, 'r', encoding='utf-8') as f:
@@ -103,63 +102,49 @@ class CheckpointManager:
                 self.failed_fan_details = {}
 
     def is_completed(self, fan_id: str) -> bool:
-        """
-        Check if a fan has been fully completed
+        """Check if a fan has been fully completed.
 
-        Args:
-            fan_id: Fan's OnlyFans ID
-
-        Returns:
-            True if fan was fully processed and completed
+        :param fan_id: Fan's OnlyFans ID
+        :return: True if fan was fully processed and completed
         """
         return str(fan_id) in self.completed_fan_ids
 
     def is_in_progress(self, fan_id: str) -> bool:
-        """
-        Check if a fan is currently marked as in-progress
+        """Check if a fan is currently marked as in-progress.
 
-        Args:
-            fan_id: Fan's OnlyFans ID
-
-        Returns:
-            True if fan is in-progress
+        :param fan_id: Fan's OnlyFans ID
+        :return: True if fan is in-progress
         """
         return str(fan_id) in self.in_progress_fan_ids
 
     def should_process(self, fan_id: str) -> bool:
-        """
-        Check if a fan should be processed (not completed, even if in-progress)
+        """Check if a fan should be processed (not completed, even if in-progress).
 
-        Args:
-            fan_id: Fan's OnlyFans ID
-
-        Returns:
-            True if fan should be processed (either new or was in-progress)
+        :param fan_id: Fan's OnlyFans ID
+        :return: True if fan should be processed (either new or was in-progress)
         """
         return str(fan_id) not in self.completed_fan_ids
 
-    def mark_in_progress(self, fan_id: str):
-        """
-        Mark a fan as in-progress BEFORE processing starts
-        This prevents duplicates on crash/restart
-        Thread-safe for concurrent processing
+    def mark_in_progress(self, fan_id: str) -> None:
+        """Mark a fan as in-progress BEFORE processing starts.
 
-        Args:
-            fan_id: Fan's OnlyFans ID
+        This prevents duplicates on crash/restart.
+        Thread-safe for concurrent processing.
+
+        :param fan_id: Fan's OnlyFans ID
         """
         with self._lock:
             fan_id_str = str(fan_id)
             self.in_progress_fan_ids.add(fan_id_str)
             self._save_checkpoint()
 
-    def mark_completed(self, fan_id: str):
-        """
-        Mark a fan as completed AFTER successful processing
-        Removes from all queues and adds to completed
-        Thread-safe for concurrent processing
+    def mark_completed(self, fan_id: str) -> None:
+        """Mark a fan as completed AFTER successful processing.
 
-        Args:
-            fan_id: Fan's OnlyFans ID
+        Removes from all queues and adds to completed.
+        Thread-safe for concurrent processing.
+
+        :param fan_id: Fan's OnlyFans ID
         """
         with self._lock:
             fan_id_str = str(fan_id)
@@ -302,8 +287,8 @@ class CheckpointManager:
         fan_id_str = str(fan_id)
         return any(f['fan_id'] == fan_id_str for f in self.rate_limited_fans)
 
-    def _save_checkpoint(self):
-        """Save checkpoint to file"""
+    def _save_checkpoint(self) -> None:
+        """Save checkpoint to file."""
         try:
             checkpoint_data = {
                 'creator_name': self.creator_name,

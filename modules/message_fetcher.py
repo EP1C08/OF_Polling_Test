@@ -1,7 +1,7 @@
-"""
-Message fetching module for OnlyFans API
-Fetches complete conversation history from latest to oldest message
-Processes messages and bundles for CSV export
+"""Message fetching module for OnlyFans API.
+
+Fetches complete conversation history from latest to oldest message.
+Processes messages and bundles for CSV export.
 """
 
 from typing import Optional, Dict, List, Any, Tuple
@@ -14,22 +14,23 @@ from modules.bundle_processor import (
 )
 
 
-async def fetch_all_messages(user, limit: int = 20, cutoff_id: Optional[int] = None, authed=None):
-    """
-    Fetch all messages from a user conversation (latest to oldest)
+async def fetch_all_messages(
+    user,
+    limit: int = 20,
+    cutoff_id: Optional[int] = None,
+    authed=None,
+) -> list:
+    """Fetch all messages from a user conversation (latest to oldest).
 
     Uses recursive pagination to retrieve complete conversation history.
     This method calls the user's get_messages() which internally handles
     the pagination from latest message back to the first message.
 
-    Args:
-        user: OnlyFans UserModel object or SimpleUser with id
-        limit: Number of messages to fetch per request (default: 20)
-        cutoff_id: Optional message ID to stop fetching at (for incremental updates)
-        authed: Optional authenticated API object (required if user is SimpleUser)
-
-    Returns:
-        List of MessageModel objects ordered from latest to oldest
+    :param user: OnlyFans UserModel object or SimpleUser with id
+    :param limit: Number of messages to fetch per request (default: 20)
+    :param cutoff_id: Optional message ID to stop fetching at (for incremental updates)
+    :param authed: Optional authenticated API object (required if user is SimpleUser)
+    :return: List of MessageModel objects ordered from latest to oldest
     """
     try:
         print(f"Fetching messages for user: {user.username} (ID: {user.id})")
@@ -61,16 +62,12 @@ async def fetch_all_messages(user, limit: int = 20, cutoff_id: Optional[int] = N
         return []
 
 
-async def fetch_messages_from_multiple_users(users: list, limit: int = 20):
-    """
-    Fetch messages from multiple users
+async def fetch_messages_from_multiple_users(users: list, limit: int = 20) -> dict:
+    """Fetch messages from multiple users.
 
-    Args:
-        users: List of OnlyFans UserModel objects
-        limit: Number of messages to fetch per request
-
-    Returns:
-        Dictionary mapping user_id to list of messages
+    :param users: List of OnlyFans UserModel objects
+    :param limit: Number of messages to fetch per request
+    :return: Dictionary mapping user_id to list of messages
     """
     all_messages = {}
 
@@ -90,32 +87,25 @@ async def fetch_messages_from_multiple_users(users: list, limit: int = 20):
     return all_messages
 
 
-async def get_conversation_with_user(authed, user_identifier: int | str, limit: int = 20):
-    """
-    Get complete conversation history with a specific user
+async def get_conversation_with_user(
+    authed,
+    user_identifier: int | str,
+    limit: int = 20,
+) -> list:
+    """Get complete conversation history with a specific user.
 
-    Args:
-        authed: Authenticated OnlyFansAuthModel object
-        user_identifier: User ID or username to fetch messages from
-        limit: Number of messages per request
-
-    Returns:
-        List of MessageModel objects
+    :param authed: Authenticated OnlyFansAuthModel object
+    :param user_identifier: User ID or username to fetch messages from
+    :param limit: Number of messages per request
+    :return: List of MessageModel objects
     """
     try:
-        # Get the user object
-        if isinstance(user_identifier, str):
-            # Search by username
-            user = await authed.get_user(user_identifier)
-        else:
-            # Get by ID
-            user = await authed.get_user(user_identifier)
+        user = await authed.get_user(user_identifier)
 
         if not user:
             print(f"✗ User not found: {user_identifier}")
             return []
 
-        # Fetch all messages
         messages = await fetch_all_messages(user, limit=limit)
         return messages
 
@@ -129,20 +119,16 @@ async def process_messages_and_bundles(
     creator_id: str,
     creator_username: str,
     fan_id: str,
-    authed=None
+    authed=None,
 ) -> Tuple[List[Dict], List[Dict], List[Dict], List[Dict], List[Dict]]:
-    """
-    Process messages and extract bundle data for CSV export
+    """Process messages and extract bundle data for CSV export.
 
-    Args:
-        messages: List of MessageModel objects
-        creator_id: Creator's OnlyFans ID
-        creator_username: Creator's username
-        fan_id: Fan's OnlyFans ID
-        authed: Authenticated OnlyFansAuthModel (for fetching mass message stats)
-
-    Returns:
-        Tuple of (messages_data, bundles_data, bundle_items_data, interactions_data, analytics_data)
+    :param messages: List of MessageModel objects
+    :param creator_id: Creator's OnlyFans ID
+    :param creator_username: Creator's username
+    :param fan_id: Fan's OnlyFans ID
+    :param authed: Authenticated OnlyFansAuthModel (for fetching mass message stats)
+    :return: Tuple of (messages_data, bundles_data, bundle_items_data, interactions_data, analytics_data)
     """
     messages_data = []
     bundles_data = []

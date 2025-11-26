@@ -1,6 +1,6 @@
-"""
-Authentication module for OnlyFans API
-Handles loading credentials from auth_multi.json and authenticating with OnlyFans
+"""Authentication module for OnlyFans API.
+
+Handles loading credentials from auth_multi.json and authenticating with OnlyFans.
 """
 
 import json
@@ -12,14 +12,11 @@ from ultima_scraper_api.apis.onlyfans.authenticator import OnlyFansAuthenticator
 
 
 async def load_auth_credentials(auth_file: str = "auth_multi.json") -> list[AuthDetails]:
-    """
-    Load authentication credentials from auth_multi.json file
+    """Load authentication credentials from auth_multi.json file.
 
-    Args:
-        auth_file: Path to the authentication JSON file
-
-    Returns:
-        List of AuthDetails objects containing authentication credentials
+    :param auth_file: Path to the authentication JSON file
+    :return: List of AuthDetails objects containing authentication credentials
+    :raises FileNotFoundError: If authentication file does not exist
     """
     auth_path = Path(auth_file)
 
@@ -88,30 +85,26 @@ async def load_auth_credentials(auth_file: str = "auth_multi.json") -> list[Auth
 
 
 async def authenticate_account(api: OnlyFansAPI, auth_details: AuthDetails):
-    """
-    Authenticate a single OnlyFans account using provided credentials
+    """Authenticate a single OnlyFans account using provided credentials.
 
-    Args:
-        api: OnlyFansAPI instance
-        auth_details: AuthDetails object with authentication credentials
-
-    Returns:
-        Authenticated OnlyFansAuthModel or None if authentication fails
+    :param api: OnlyFansAPI instance
+    :param auth_details: AuthDetails object with authentication credentials
+    :return: Authenticated OnlyFansAuthModel or None if authentication fails
     """
     try:
         # Create authenticator directly
         authenticator = OnlyFansAuthenticator(api, auth_details)
         authed = await authenticator.login()
 
-        if authed and authenticator.is_authed():
-            print(f"✓ Successfully authenticated: {auth_details.username or authed.user.username}")
-            return authed
-        else:
+        if not authed or not authenticator.is_authed():
             print(f"✗ Authentication failed for: {auth_details.username}")
             if authenticator.errors:
                 for error in authenticator.errors:
                     print(f"  Error: {error.message}")
             return None
+
+        print(f"✓ Successfully authenticated: {auth_details.username or authed.user.username}")
+        return authed
 
     except Exception as e:
         print(f"✗ Exception during authentication for {auth_details.username}: {str(e)}")
@@ -119,14 +112,10 @@ async def authenticate_account(api: OnlyFansAPI, auth_details: AuthDetails):
 
 
 async def authenticate_all_accounts(auth_file: str = "auth_multi.json") -> list:
-    """
-    Load and authenticate all accounts from auth_multi.json
+    """Load and authenticate all accounts from auth_multi.json.
 
-    Args:
-        auth_file: Path to the authentication JSON file
-
-    Returns:
-        List of authenticated OnlyFansAuthModel objects
+    :param auth_file: Path to the authentication JSON file
+    :return: List of authenticated OnlyFansAuthModel objects
     """
     # Load credentials
     auth_details_list = await load_auth_credentials(auth_file)

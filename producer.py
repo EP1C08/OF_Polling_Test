@@ -1,6 +1,6 @@
-"""
-Producer Script - Fetches messages and pushes to Redis Streams
-Run one instance per creator
+"""Producer Script - Fetches messages and pushes to Redis Streams.
+
+Run one instance per creator.
 
 Features:
 - Concurrent fan processing (3 fans at once by default)
@@ -24,24 +24,29 @@ from modules.checkpoint import CheckpointManager
 from ultima_scraper_api import OnlyFansAPI
 
 
-async def process_single_fan(fan_user, authed, checkpoint, producer, creator_id_str, creator_username,
-                             fetch_timeout, logger, semaphore):
-    """
-    Process a single fan with concurrent-safe error handling
+async def process_single_fan(
+    fan_user,
+    authed,
+    checkpoint,
+    producer,
+    creator_id_str: str,
+    creator_username: str,
+    fetch_timeout: int,
+    logger,
+    semaphore,
+) -> dict:
+    """Process a single fan with concurrent-safe error handling.
 
-    Args:
-        fan_user: User object to fetch messages from
-        authed: Authenticated API object
-        checkpoint: CheckpointManager instance
-        producer: RedisProducer instance
-        creator_id_str: Creator's ID as string
-        creator_username: Creator's username
-        fetch_timeout: Timeout in seconds for fetching
-        logger: Logger instance
-        semaphore: asyncio.Semaphore for concurrency control
-
-    Returns:
-        Dict with status: 'success', 'timeout', 'rate_limit', or 'error'
+    :param fan_user: User object to fetch messages from
+    :param authed: Authenticated API object
+    :param checkpoint: CheckpointManager instance
+    :param producer: RedisProducer instance
+    :param creator_id_str: Creator's ID as string
+    :param creator_username: Creator's username
+    :param fetch_timeout: Timeout in seconds for fetching
+    :param logger: Logger instance
+    :param semaphore: asyncio.Semaphore for concurrency control
+    :return: Dict with status: 'success', 'timeout', 'rate_limit', or 'error'
     """
     async with semaphore:
         checkpoint.mark_in_progress(fan_user.id)
@@ -139,24 +144,29 @@ async def process_single_fan(fan_user, authed, checkpoint, producer, creator_id_
             }
 
 
-async def retry_rate_limited_fan(fan_data, authed, checkpoint, producer, creator_id_str, creator_username,
-                                 fetch_timeout, logger, max_retries=3):
-    """
-    Retry a rate-limited fan with exponential backoff
+async def retry_rate_limited_fan(
+    fan_data: dict,
+    authed,
+    checkpoint,
+    producer,
+    creator_id_str: str,
+    creator_username: str,
+    fetch_timeout: int,
+    logger,
+    max_retries: int = 3,
+) -> dict:
+    """Retry a rate-limited fan with exponential backoff.
 
-    Args:
-        fan_data: Dict with fan_id, fan_username, retry_count
-        authed: Authenticated API object
-        checkpoint: CheckpointManager instance
-        producer: RedisProducer instance
-        creator_id_str: Creator's ID as string
-        creator_username: Creator's username
-        fetch_timeout: Timeout in seconds
-        logger: Logger instance
-        max_retries: Maximum retry attempts (default 3)
-
-    Returns:
-        Dict with status: 'success', 'rate_limit', or 'failed'
+    :param fan_data: Dict with fan_id, fan_username, retry_count
+    :param authed: Authenticated API object
+    :param checkpoint: CheckpointManager instance
+    :param producer: RedisProducer instance
+    :param creator_id_str: Creator's ID as string
+    :param creator_username: Creator's username
+    :param fetch_timeout: Timeout in seconds
+    :param logger: Logger instance
+    :param max_retries: Maximum retry attempts (default 3)
+    :return: Dict with status: 'success', 'rate_limit', or 'failed'
     """
     fan_id = fan_data['fan_id']
     fan_username = fan_data['fan_username']
@@ -242,8 +252,8 @@ async def retry_rate_limited_fan(fan_data, authed, checkpoint, producer, creator
             return {'status': 'error', 'fan_id': fan_id, 'fan_username': fan_username}
 
 
-async def main():
-    # Get creator ID from environment variable
+async def main() -> None:
+    """Main function to run producer for a single creator."""
     creator_id = os.getenv('CREATOR_ID')
     if not creator_id:
         print("✗ CREATOR_ID environment variable not set")

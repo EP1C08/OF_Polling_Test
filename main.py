@@ -1,7 +1,7 @@
-"""
-OnlyFans Message Polling System
-Main entry point for authentication and message fetching
-Exports messages and bundles to CSV files
+"""OnlyFans Message Polling System.
+
+Main entry point for authentication and message fetching.
+Exports messages and bundles to CSV files.
 """
 
 import asyncio
@@ -13,10 +13,8 @@ from modules.message_fetcher import (
 from modules.csv_exporter import export_all_csvs
 
 
-async def main():
-    """
-    Main function to authenticate and fetch messages, then export to CSV
-    """
+async def main() -> None:
+    """Main function to authenticate and fetch messages, then export to CSV."""
     print("=" * 60)
     print("OnlyFans Message Polling System")
     print("=" * 60)

@@ -1,6 +1,6 @@
-"""
-Redis Stream Producer
-Fetches raw messages and pushes them to Redis Streams
+"""Redis Stream Producer.
+
+Fetches raw messages and pushes them to Redis Streams.
 """
 
 import redis.asyncio as aioredis
@@ -12,22 +12,27 @@ from modules.sanitizer import sanitize_dict, sanitize_text
 
 
 class RedisProducer:
-    def __init__(self, redis_host: str = 'redis', redis_port: int = 6379, redis_db: int = 0):
-        """
-        Initialize Redis producer
+    """Redis producer for pushing messages to Redis Streams."""
 
-        Args:
-            redis_host: Redis server hostname
-            redis_port: Redis server port
-            redis_db: Redis database number
+    def __init__(
+        self,
+        redis_host: str = 'redis',
+        redis_port: int = 6379,
+        redis_db: int = 0,
+    ):
+        """Initialize Redis producer.
+
+        :param redis_host: Redis server hostname
+        :param redis_port: Redis server port
+        :param redis_db: Redis database number
         """
         self.redis_host = redis_host
         self.redis_port = redis_port
         self.redis_db = redis_db
         self.redis: Optional[aioredis.Redis] = None
 
-    async def connect(self):
-        """Connect to Redis server"""
+    async def connect(self) -> None:
+        """Connect to Redis server."""
         try:
             self.redis = await aioredis.from_url(
                 f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}",
@@ -40,35 +45,27 @@ class RedisProducer:
             print(f"✗ Failed to connect to Redis: {str(e)}")
             raise
 
-    async def close(self):
-        """Close Redis connection"""
+    async def close(self) -> None:
+        """Close Redis connection."""
         if self.redis:
             await self.redis.close()
             print("✓ Redis connection closed")
 
     def _get_stream_key(self, creator_id: str, stream_type: str = 'messages') -> str:
-        """
-        Generate Redis stream key for creator
+        """Generate Redis stream key for creator.
 
-        Args:
-            creator_id: Creator's OnlyFans ID
-            stream_type: Type of stream (messages, bundles, etc.)
-
-        Returns:
-            Redis stream key
+        :param creator_id: Creator's OnlyFans ID
+        :param stream_type: Type of stream (messages, bundles, etc.)
+        :return: Redis stream key
         """
         return f"of:{creator_id}:{stream_type}"
 
     async def push_message(self, creator_id: str, message_data: Dict[str, Any]) -> str:
-        """
-        Push a single message to Redis stream
+        """Push a single message to Redis stream.
 
-        Args:
-            creator_id: Creator's OnlyFans ID
-            message_data: Message dictionary
-
-        Returns:
-            Message ID from Redis
+        :param creator_id: Creator's OnlyFans ID
+        :param message_data: Message dictionary
+        :return: Message ID from Redis
         """
         if not self.redis:
             raise RuntimeError("Redis not connected")

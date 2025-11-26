@@ -1,6 +1,6 @@
-"""
-Redis Stream Consumer
-Consumes messages from Redis Streams and generates CSV files
+"""Redis Stream Consumer.
+
+Consumes messages from Redis Streams and generates CSV files.
 """
 
 import redis.asyncio as aioredis
@@ -14,6 +14,8 @@ from typing import Optional, List, Dict, Any
 
 
 class RedisConsumer:
+    """Redis consumer for reading from Redis Streams and exporting to CSV."""
+
     def __init__(
         self,
         creator_id: str,
@@ -21,18 +23,16 @@ class RedisConsumer:
         redis_port: int = 6379,
         redis_db: int = 0,
         output_dir: str = 'output',
-        creator_name: str = None
+        creator_name: str = None,
     ):
-        """
-        Initialize Redis consumer
+        """Initialize Redis consumer.
 
-        Args:
-            creator_id: Creator's OnlyFans ID
-            redis_host: Redis server hostname
-            redis_port: Redis server port
-            redis_db: Redis database number
-            output_dir: Output directory for CSV files
-            creator_name: Creator's name for folder naming (defaults to creator_id)
+        :param creator_id: Creator's OnlyFans ID
+        :param redis_host: Redis server hostname
+        :param redis_port: Redis server port
+        :param redis_db: Redis database number
+        :param output_dir: Output directory for CSV files
+        :param creator_name: Creator's name for folder naming (defaults to creator_id)
         """
         self.creator_id = creator_id
         self.creator_name = creator_name or creator_id
@@ -44,8 +44,8 @@ class RedisConsumer:
         self.consumer_group = f"csv_writer_{creator_id}"
         self.consumer_name = f"consumer_{creator_id}"
 
-    async def connect(self):
-        """Connect to Redis server"""
+    async def connect(self) -> None:
+        """Connect to Redis server."""
         try:
             self.redis = await aioredis.from_url(
                 f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}",
@@ -58,18 +58,25 @@ class RedisConsumer:
             print(f"✗ Failed to connect to Redis: {str(e)}")
             raise
 
-    async def close(self):
-        """Close Redis connection"""
+    async def close(self) -> None:
+        """Close Redis connection."""
         if self.redis:
             await self.redis.close()
             print("✓ Consumer Redis connection closed")
 
     def _get_stream_key(self, stream_type: str) -> str:
-        """Generate Redis stream key"""
+        """Generate Redis stream key.
+
+        :param stream_type: Type of stream (messages, bundles, etc.)
+        :return: Redis stream key
+        """
         return f"of:{self.creator_id}:{stream_type}"
 
     async def is_producer_done(self) -> bool:
-        """Check if producer has finished processing"""
+        """Check if producer has finished processing.
+
+        :return: True if producer is done, False otherwise
+        """
         if not self.redis:
             return False
 

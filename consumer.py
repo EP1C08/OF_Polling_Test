@@ -1,6 +1,6 @@
-"""
-Consumer Script - Reads from Redis Streams and exports to CSV
-Run one instance per creator
+"""Consumer Script - Reads from Redis Streams and exports to CSV.
+
+Run one instance per creator.
 """
 
 import asyncio
@@ -11,8 +11,8 @@ from modules.redis_consumer import RedisConsumer
 from modules.logger import setup_logger
 
 
-async def main():
-    # Get creator ID from environment variable
+async def main() -> None:
+    """Main function to run consumer for a single creator."""
     creator_id = os.getenv('CREATOR_ID')
     if not creator_id:
         print("✗ CREATOR_ID environment variable not set")
