@@ -45,10 +45,44 @@ test_output/
 conversations/
 checkpoints/
 logs/
+test_logs/
+test_checkpoints/
 
 # Docker
 docker-compose.generated.yml
 docker-compose.test.yml
+
+# Test Files
+Dockerfile.test-producer
+
+# Temporary Scripts
+cleanup_redis_streams.py
+add_test_fan.py
+generate_single_creator.py
+
+# Documentation (auto-generated)
+DATABASE_SETUP_COMPLETE.md
+DATABASE_WORKER_SETUP.md
+DEDUPLICATION_SYSTEM.md
+IMPLEMENTATION_COMPLETE.md
+MEMORY_OPTIMIZATION.md
+QUICK_TEST.md
+TEST_SUITE_SUMMARY.md
+TEST_WEBSOCKET.md
+CHANGES_SUMMARY.md
+
+# Test Config
+pytest.ini
+requirements-dev.txt
+
+# Test Suite
+tests/
+
+# Database Worker
+db_worker_sqlalchemy_full.py
+
+# GitHub Actions
+.github/
 
 # OS
 .DS_Store
