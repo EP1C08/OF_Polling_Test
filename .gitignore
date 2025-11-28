@@ -57,3 +57,6 @@ Thumbs.db
 # Redis
 *.rdb
 dump.rdb
+
+# Claude
+.claude

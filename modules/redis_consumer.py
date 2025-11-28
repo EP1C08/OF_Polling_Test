@@ -58,6 +58,28 @@ class RedisConsumer:
             print(f"✗ Failed to connect to Redis: {str(e)}")
             raise
 
+    async def reconnect(self) -> bool:
+        """Reconnect to Redis after connection loss.
+
+        :return: True if successful, False otherwise
+        """
+        try:
+            if self.redis:
+                await self.redis.close()
+                print("Closed old Redis connection")
+
+            self.redis = await aioredis.from_url(
+                f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}",
+                encoding="utf-8",
+                decode_responses=True
+            )
+            await self.redis.ping()
+            print("✓ Redis reconnected successfully")
+            return True
+        except Exception as e:
+            print(f"✗ Failed to reconnect to Redis: {str(e)}")
+            return False
+
     async def close(self) -> None:
         """Close Redis connection."""
         if self.redis:
@@ -122,15 +144,32 @@ class RedisConsumer:
         # Ensure consumer group exists
         await self.create_consumer_group(stream_type)
 
-        # Read from stream
+        # Read from stream with retry on connection error
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                streams = await self.redis.xreadgroup(
+                    groupname=self.consumer_group,
+                    consumername=self.consumer_name,
+                    streams={stream_key: '>'},
+                    count=count,
+                    block=block
+                )
+                break  # Success, exit retry loop
+            except (aioredis.ConnectionError, aioredis.TimeoutError) as e:
+                if attempt < max_retries - 1:
+                    print(f"⚠️ Redis connection error (attempt {attempt + 1}/{max_retries}), reconnecting...")
+                    await asyncio.sleep(2)
+                    await self.reconnect()
+                else:
+                    print(f"✗ Failed to read from Redis after {max_retries} attempts")
+                    raise
+            except Exception as e:
+                print(f"✗ Unexpected error reading stream: {str(e)}")
+                raise
+
         try:
-            streams = await self.redis.xreadgroup(
-                groupname=self.consumer_group,
-                consumername=self.consumer_name,
-                streams={stream_key: '>'},
-                count=count,
-                block=block
-            )
+            streams_data = streams
 
             messages = []
             if streams:

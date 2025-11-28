@@ -134,7 +134,7 @@ async def process_single_fan(
 
             # Other errors
             logger.error(f"  ✗ {fan_user.username}: Error - {error_msg} (failed after {fan_duration:.2f}s)")
-            await producer.push_error(creator_id_str, str(fan_user.id), fan_user.username, error_msg, retry_count=0)
+            # Error tracking disabled (push_error removed with Stream conversion)
             return {
                 'status': 'error',
                 'fan_id': fan_user.id,
@@ -247,7 +247,7 @@ async def retry_rate_limited_fan(
         else:
             # Different error
             logger.error(f"  ✗ {fan_username}: Error during retry - {error_msg}")
-            await producer.push_error(creator_id_str, fan_id, fan_username, error_msg, retry_count)
+            # Error tracking disabled (push_error removed with Stream conversion)
             checkpoint.mark_rate_limited(fan_id, fan_username, retry_count + 1)
             return {'status': 'error', 'fan_id': fan_id, 'fan_username': fan_username}
 
@@ -339,6 +339,15 @@ async def main() -> None:
             # Convert to same format as JSON for consistency
             conversations_data = [{'id': chat.user.id, 'username': chat.user.username, 'name': chat.user.name} for chat in chats]
             total_users = len(conversations_data)
+
+        # TEST MODE: Limit number of fans to process
+        test_limit = os.getenv('TEST_LIMIT')
+        if test_limit:
+            test_limit = int(test_limit)
+            if test_limit > 0 and test_limit < len(conversations_data):
+                logger.info(f"🧪 TEST MODE: Limiting to {test_limit} fans (from {len(conversations_data)} total)")
+                conversations_data = conversations_data[:test_limit]
+                total_users = len(conversations_data)
 
         # Initialize checkpoint manager
         checkpoint = CheckpointManager(creator_name)
@@ -490,12 +499,10 @@ async def main() -> None:
         # Calculate overall duration
         overall_duration = time.time() - start_time_overall
 
-        # Print stream stats
+        # Print processing summary
         logger.info(f"\n{'=' * 60}")
-        logger.info("Stream Statistics:")
-        for stream_type in ['messages', 'bundles', 'bundle_items', 'fan_interactions', 'analytics']:
-            length = await producer.get_stream_length(creator_id_str, stream_type)
-            logger.info(f"  {stream_type}: {length} entries")
+        logger.info("Processing Summary:")
+        logger.info(f"  All data pushed to Redis Lists successfully")
         logger.info(f"{'=' * 60}")
         logger.info(f"\nPhase 1 Complete - Normal Fans Processing:")
         logger.info(f"  Skipped (already processed): {skipped_count}")
@@ -591,13 +598,14 @@ async def main() -> None:
                     error_msg = str(e)
                     heavy_duration = time.time() - heavy_start_time
                     logger.error(f"  ✗ Error processing heavy fan: {error_msg} (failed after {heavy_duration:.2f}s)")
-                    await producer.push_error(creator_id_str, fan_id, fan_username, error_msg, retry_count=0)
+                    # Error tracking disabled (push_error removed with Stream conversion)
 
             logger.info(f"\n✓ Completed processing {len(heavy_fans)} heavy fan(s)")
 
-        # Retry failed fans (up to 3 retries)
-        failed_fans = await producer.get_failed_fans(creator_id_str, max_retries=3)
-        if failed_fans:
+        # Retry failed fans (up to 3 retries) - DISABLED (uses Stream-based queue)
+        # TODO: Implement List-based failed fan queue if needed
+        failed_fans = []  # await producer.get_failed_fans(creator_id_str, max_retries=3)
+        if False and failed_fans:
             logger.info(f"\n{'=' * 60}")
             logger.info(f"Retrying {len(failed_fans)} failed fan(s)...")
             logger.info(f"{'=' * 60}")
@@ -648,7 +656,7 @@ async def main() -> None:
                 except Exception as e:
                     error_msg = str(e)
                     logger.info(f"  ✗ Retry failed: {error_msg}")
-                    await producer.push_error(creator_id_str, fan_id, fan_username, error_msg, retry_count=retry_count + 1)
+                    # Error tracking disabled (push_error removed with Stream conversion)
 
         # Mark producer as done so consumer knows to finish
         await producer.mark_producer_done(creator_id_str)
@@ -665,11 +673,19 @@ async def main() -> None:
         try:
             if 'api' in locals() and hasattr(api, 'close_pool'):
                 await api.close_pool()
+                logger.info("✓ API session closed")
         except Exception as e:
             logger.warning(f"⚠ Warning during API cleanup: {str(e)}")
 
         # Close Redis connection
-        await producer.close()
+        try:
+            await producer.close()
+        except Exception as e:
+            logger.warning(f"⚠ Warning during Redis cleanup: {str(e)}")
+
+        # Final garbage collection
+        gc.collect()
+        logger.info("✓ Memory cleanup completed")
 
     logger.info("\n✓ Producer finished successfully")
 

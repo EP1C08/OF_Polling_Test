@@ -133,3 +133,79 @@ async def authenticate_all_accounts(auth_file: str = "auth_multi.json") -> list:
 
     print(f"\nAuthentication complete: {len(authenticated_accounts)}/{len(auth_details_list)} successful")
     return authenticated_accounts
+
+
+def load_auth(creator_id: str, auth_file: str = "auth_multi.json") -> Optional[AuthDetails]:
+    """Load authentication details for a specific creator.
+
+    :param creator_id: Creator's OnlyFans ID
+    :param auth_file: Path to the authentication JSON file
+    :return: AuthDetails object or None if not found
+    """
+    auth_path = Path(auth_file)
+    if not auth_path.exists():
+        return None
+
+    with open(auth_path, 'r') as f:
+        auth_data = json.load(f)
+
+    # Handle different auth file structures
+    if isinstance(auth_data, dict) and 'accounts' in auth_data:
+        accounts = auth_data['accounts']
+        for account in accounts:
+            if not account.get('active', True):
+                continue
+            auth_obj = account.get('auth', {})
+            if str(auth_obj.get('id')) == str(creator_id):
+                return AuthDetails(
+                    id=auth_obj.get('id'),
+                    username=account.get('name', ''),
+                    cookie=auth_obj.get('cookie', ''),
+                    x_bc=auth_obj.get('x_bc', ''),
+                    user_agent=auth_obj.get('user_agent', ''),
+                    email=auth_obj.get('email', ''),
+                    password=auth_obj.get('password', ''),
+                    support_2fa=auth_obj.get('support_2fa', True)
+                )
+    elif isinstance(auth_data, list):
+        for account in auth_data:
+            if str(account.get('id')) == str(creator_id):
+                return AuthDetails(
+                    id=account.get('id'),
+                    username=account.get('username', ''),
+                    cookie=account.get('cookie', ''),
+                    x_bc=account.get('x_bc', ''),
+                    user_agent=account.get('user_agent', ''),
+                    email=account.get('email', ''),
+                    password=account.get('password', ''),
+                    support_2fa=account.get('support_2fa', True)
+                )
+
+    return None
+
+
+async def create_api_helper(auth_details: AuthDetails, logger):
+    """Create OnlyFans API and authenticate.
+
+    :param auth_details: AuthDetails object with credentials
+    :param logger: Logger instance
+    :return: Tuple of (api, authed) or (None, None) if failed
+    """
+    try:
+        api = OnlyFansAPI()
+        authenticator = OnlyFansAuthenticator(api, auth_details)
+        authed = await authenticator.login()
+
+        if not authed or not authenticator.is_authed():
+            logger.error(f"✗ Authentication failed for: {auth_details.username}")
+            if authenticator.errors:
+                for error in authenticator.errors:
+                    logger.error(f"  Error: {error.message}")
+            return None, None
+
+        logger.info(f"✓ Successfully authenticated: {auth_details.username or authed.user.username}")
+        return api, authed
+
+    except Exception as e:
+        logger.error(f"✗ Exception during authentication: {str(e)}")
+        return None, None

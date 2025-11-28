@@ -1,0 +1,148 @@
+version: '3.8'
+
+services:
+  # Redis Server
+  redis:
+    image: redis:7-alpine
+    container_name: of-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru
+    restart: unless-stopped
+    networks:
+      - of-network
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+
+  # Producer for Creator 1
+  producer-creator1:
+    build:
+      context: .
+      dockerfile: Dockerfile.producer
+    container_name: of-producer-creator1
+    environment:
+      - CREATOR_ID=creator1  # Replace with actual creator ID or username
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - AUTH_FILE=/app/auth_multi.json
+      - CONCURRENT_FANS=3        # 3 fans at once
+      - FAN_DELAY=5              # 5s sleep between batches
+      - FETCH_TIMEOUT=600        # 10 minutes timeout
+      - REAUTH_INTERVAL=100      # Reauth every 100 fans
+    volumes:
+      - ./auth_multi.json:/app/auth_multi.json:ro
+      - ./checkpoints:/app/checkpoints
+      - ./conversations:/app/conversations:ro
+      - ./logs:/app/logs
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - of-network
+    deploy:
+      resources:
+        limits:
+          memory: 2G             # Increased from 1G for 3 concurrent
+        reservations:
+          memory: 512M
+
+  # Consumer for Creator 1
+  consumer-creator1:
+    build:
+      context: .
+      dockerfile: Dockerfile.consumer
+    container_name: of-consumer-creator1
+    environment:
+      - CREATOR_ID=creator1  # Must match producer
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - OUTPUT_DIR=/app/output
+    volumes:
+      - ./output:/app/output
+    depends_on:
+      - redis
+      - producer-creator1
+    restart: unless-stopped
+    networks:
+      - of-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+
+  # Producer for Creator 2
+  producer-creator2:
+    build:
+      context: .
+      dockerfile: Dockerfile.producer
+    container_name: of-producer-creator2
+    environment:
+      - CREATOR_ID=creator2  # Replace with actual creator ID
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - AUTH_FILE=/app/auth_multi.json
+      - CONCURRENT_FANS=3        # 3 fans at once
+      - FAN_DELAY=5              # 5s sleep between batches
+      - FETCH_TIMEOUT=600        # 10 minutes timeout
+      - REAUTH_INTERVAL=100      # Reauth every 100 fans
+    volumes:
+      - ./auth_multi.json:/app/auth_multi.json:ro
+      - ./checkpoints:/app/checkpoints
+      - ./conversations:/app/conversations:ro
+      - ./logs:/app/logs
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - of-network
+    deploy:
+      resources:
+        limits:
+          memory: 2G             # Increased from 1G for 3 concurrent
+        reservations:
+          memory: 512M
+
+  # Consumer for Creator 2
+  consumer-creator2:
+    build:
+      context: .
+      dockerfile: Dockerfile.consumer
+    container_name: of-consumer-creator2
+    environment:
+      - CREATOR_ID=creator2  # Must match producer
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - OUTPUT_DIR=/app/output
+    volumes:
+      - ./output:/app/output
+    depends_on:
+      - redis
+      - producer-creator2
+    restart: unless-stopped
+    networks:
+      - of-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+
+  # Add more creator pairs (producer + consumer) as needed...
+  # Copy the pattern above for creator3, creator4, etc.
+
+volumes:
+  redis_data:
+    driver: local
+
+networks:
+  of-network:
+    driver: bridge

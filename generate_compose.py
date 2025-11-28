@@ -124,6 +124,9 @@ def generate_docker_compose(
         'driver': 'local'
     }
 
+    # Define db_worker service name (needed by listener/fan_sync depends_on)
+    db_worker_service = 'db_worker'
+
     # Generate producer and consumer for each creator
     for creator in creators:
         creator_id = creator['id']
@@ -147,8 +150,8 @@ def generate_docker_compose(
             'volumes': [
                 './auth_multi.json:/app/auth_multi.json:ro',
                 './conversations:/app/conversations:ro',
-                './logs:/app/logs',
-                './checkpoints:/app/checkpoints'
+                './test_logs:/app/logs' if is_test else './logs:/app/logs',
+                './test_checkpoints:/app/checkpoints' if is_test else './checkpoints:/app/checkpoints'
             ],
             'depends_on': [redis_name],
             'restart': 'no',  # Exit when done (don't restart)
@@ -168,7 +171,7 @@ def generate_docker_compose(
         # Add test mode environment variables
         if is_test:
             compose_dict['services'][producer_service]['environment'].extend([
-                'TEST_LIMIT=3',
+                'TEST_LIMIT=5',         # Only process 5 fans per creator
                 'MESSAGE_LIMIT=10',
                 'CONCURRENT_FANS=3',    # 3 fans at once
                 'FAN_DELAY=5',          # 5s between batches
@@ -217,6 +220,111 @@ def generate_docker_compose(
             }
         }
 
+        # WebSocket Listener service (24/7 real-time notifications)
+        listener_service = f'listener-{creator_name}'
+        compose_dict['services'][listener_service] = {
+            'build': {
+                'context': '.',
+                'dockerfile': 'Dockerfile.listener'
+            },
+            'container_name': f'{container_prefix}-listener-{creator_name}',
+            'environment': [
+                f'CREATOR_ID={creator_id}',
+                f'CREATOR_NAME={creator["name"]}',
+                'DATABASE_URL=${DATABASE_URL}',
+                f'REDIS_HOST={redis_name}',
+                f'REDIS_PORT={redis_internal_port}'
+            ],
+            'volumes': [
+                './auth_multi.json:/app/auth_multi.json:ro',
+                './test_logs:/app/logs' if is_test else './logs:/app/logs'
+            ],
+            'depends_on': [redis_name, db_worker_service],
+            'restart': 'unless-stopped',  # Auto-restart on failure
+            'networks': [network_name],
+            'deploy': {
+                'resources': {
+                    'limits': {
+                        'memory': '512M'
+                    },
+                    'reservations': {
+                        'memory': '128M'
+                    }
+                }
+            }
+        }
+
+        # Fan Sync service (detect new subscribers every 4 hours)
+        fan_sync_service = f'fan-sync-{creator_name}'
+        compose_dict['services'][fan_sync_service] = {
+            'build': {
+                'context': '.',
+                'dockerfile': 'Dockerfile.fan_sync'
+            },
+            'container_name': f'{container_prefix}-fan-sync-{creator_name}',
+            'environment': [
+                f'CREATOR_ID={creator_id}',
+                f'CREATOR_NAME={creator["name"]}',
+                'DATABASE_URL=${DATABASE_URL}',
+                f'REDIS_HOST={redis_name}',
+                f'REDIS_PORT={redis_internal_port}',
+                'SYNC_INTERVAL=14400'  # 4 hours
+            ],
+            'volumes': [
+                './auth_multi.json:/app/auth_multi.json:ro',
+                './conversations:/app/conversations:ro',
+                './test_logs:/app/logs' if is_test else './logs:/app/logs'
+            ],
+            'depends_on': [redis_name, db_worker_service],
+            'restart': 'unless-stopped',  # Auto-restart on failure
+            'networks': [network_name],
+            'deploy': {
+                'resources': {
+                    'limits': {
+                        'memory': '512M'
+                    },
+                    'reservations': {
+                        'memory': '128M'
+                    }
+                }
+            }
+        }
+
+    # Database Worker service (multi-creator support)
+    compose_dict['services'][db_worker_service] = {
+        'build': {
+            'context': '.',
+            'dockerfile': 'Dockerfile.db_worker'
+        },
+        'container_name': f'{container_prefix}-db-worker',
+        'environment': [
+            'DATABASE_URL=${DATABASE_URL}',
+            f'REDIS_HOST={redis_name}',
+            f'REDIS_PORT={redis_internal_port}',
+            'AUTH_FILE=/app/auth_multi.json',
+            'BATCH_SIZE=50',
+            'GC_INTERVAL=1000'
+        ],
+        'volumes': [
+            './auth_multi.json:/app/auth_multi.json:ro',
+            './test_output:/app/output' if is_test else './output:/app/output',
+            './test_logs:/app/logs' if is_test else './logs:/app/logs'
+        ],
+        'depends_on': [redis_name],
+        'restart': 'no',
+        'networks': [network_name],
+        'deploy': {
+            'resources': {
+                'limits': {
+                    'memory': '1536M'
+                },
+                'reservations': {
+                    'memory': '256M'
+                }
+            }
+        }
+    }
+
     # Generate output filename
     if not output_file:
         if is_test:
@@ -231,10 +339,17 @@ def generate_docker_compose(
     print(f"✓ Generated {output_file}")
     print(f"  Redis: 1 container")
     print(f"  Creators: {len(creators)}")
-    print(f"  Producers: {len(creators)} containers")
-    print(f"  Consumers: {len(creators)} containers")
-    print(f"  Total: {1 + len(creators) * 2} containers")
+    print(f"  Producers: {len(creators)} containers (initial data collection)")
+    print(f"  Consumers: {len(creators)} containers (CSV export, optional)")
+    print(f"  Database Worker: 1 container (handles all creators)")
+    print(f"  WebSocket Listeners: {len(creators)} containers (24/7 real-time)")
+    print(f"  Fan Sync Workers: {len(creators)} containers (every 4 hours)")
+    print(f"  Total: {2 + len(creators) * 4} containers")
     print(f"\nCreators: {', '.join([c['name'] for c in creators])}")
+    print(f"\nUsage:")
+    print(f"  Initial setup:  docker-compose -f {output_file} up redis producer-* db_worker --build -d")
+    print(f"  Real-time mode: docker-compose -f {output_file} up redis db_worker listener-* fan-sync-* --build -d")
+    print(f"  CSV mode:       docker-compose -f {output_file} up redis producer-* consumer-* --build -d")
 
     return output_file
 

@@ -1,0 +1,25 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+ENV PYTHONUNBUFFERED=1
+
+# Install system dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY modules/ ./modules/
+COPY models/ ./models/
+COPY websocket_listener.py .
+
+# Memory limit (set via docker-compose)
+ENV MALLOC_TRIM_THRESHOLD_=131072
+
+CMD ["python", "websocket_listener.py"]
