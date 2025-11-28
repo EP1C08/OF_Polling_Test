@@ -42,13 +42,13 @@ def setup_logger(creator_name: str, log_type: str = "producer", log_dir: str = "
     # File handler with immediate flush
     file_handler = ImmediateFlushFileHandler(log_file, encoding='utf-8')
     file_handler.setLevel(logging.INFO)
-    file_formatter = logging.Formatter('[%(levelname)s] %(message)s')
+    file_formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
     file_handler.setFormatter(file_formatter)
 
     # Console handler
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
-    console_formatter = logging.Formatter('[%(levelname)s] %(message)s')
+    console_formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
     console_handler.setFormatter(console_formatter)
 
     # Add handlers

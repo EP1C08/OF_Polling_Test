@@ -69,12 +69,24 @@ class FanSync:
 
             auth_details = load_auth(creator_id=self.creator_id)
             if not auth_details:
-                self.logger.error("Failed to load authentication")
+                self.logger.error("=" * 70)
+                self.logger.error("✗ AUTHENTICATION FAILED: Unable to load credentials")
+                self.logger.error(f"✗ Creator ID: {self.creator_id}")
+                self.logger.error(f"✗ Creator Name: {self.creator_name}")
+                self.logger.error("✗ Check auth_multi.json for this creator")
+                self.logger.error("=" * 70)
                 return False
 
             self.api, self.authed = await create_api_helper(auth_details, self.logger)
             if not self.authed:
-                self.logger.error("Failed to create authenticated API")
+                self.logger.error("=" * 70)
+                self.logger.error("✗ AUTHENTICATION FAILED: Unable to authenticate with OnlyFans")
+                self.logger.error(f"✗ Creator: {self.creator_name} (ID: {self.creator_id})")
+                self.logger.error("✗ Possible causes:")
+                self.logger.error("  - Invalid cookie/x_bc token")
+                self.logger.error("  - Expired session")
+                self.logger.error("  - Account disabled/inactive in auth_multi.json")
+                self.logger.error("=" * 70)
                 return False
 
             self.logger.info("✓ Authenticated with OnlyFans API")
@@ -202,7 +214,15 @@ class FanSync:
                     'created_at': message.created_at.isoformat() if message.created_at else None,
                     'fetched_at': fetched_at.isoformat()
                 }
-                await self.redis_producer.push_message(self.creator_id, message_dict)
+                try:
+                    await self.redis_producer.push_message(self.creator_id, message_dict)
+                except Exception as push_error:
+                    self.logger.error(f"✗ Failed to push message {message_dict.get('message_id')} for fan {fan_id}")
+                    self.logger.error(f"  Error: {str(push_error)}")
+                    self.logger.error(f"  Redis key would be: of:{self.creator_id}:messages")
+                    import traceback
+                    self.logger.error(f"  Traceback:\n{traceback.format_exc()}")
+                    raise
 
                 if is_bundle(message):
                     bundle_data, bundle_items, fan_interaction = process_bundle_from_message(
@@ -229,6 +249,8 @@ class FanSync:
 
         except Exception as e:
             self.logger.error(f"✗ Error processing new fan {fan_id}: {str(e)}")
+            import traceback
+            self.logger.error(f"Traceback:\n{traceback.format_exc()}")
             return False
 
     async def sync_fans(self):
@@ -345,7 +367,11 @@ async def main():
     )
 
     if not await fan_sync.initialize():
-        print("✗ Failed to initialize fan sync")
+        print("=" * 70)
+        print("✗ FATAL: Failed to initialize fan sync")
+        print("✗ Authentication or component initialization failed")
+        print("✗ Container will exit now")
+        print("=" * 70)
         sys.exit(1)
 
     await fan_sync.run()

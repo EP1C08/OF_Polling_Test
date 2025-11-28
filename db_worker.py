@@ -400,14 +400,21 @@ class DatabaseWorker:
 
                 messages_key = self._get_list_key(creator_id, 'messages')
                 messages_batch = []
-                for _ in range(batch_size):
-                    message_data = await self.redis.lpop(messages_key)
-                    if not message_data:
-                        break
-                    has_data = True
-                    msg = json.loads(message_data)
-                    messages_batch.append(msg)
-                    del message_data
+                try:
+                    for _ in range(batch_size):
+                        message_data = await self.redis.lpop(messages_key)
+                        if not message_data:
+                            break
+                        has_data = True
+                        msg = json.loads(message_data)
+                        messages_batch.append(msg)
+                        del message_data
+                except Exception as redis_error:
+                    key_type = await self.redis.type(messages_key)
+                    self.logger.error(f"[{creator_name}] ✗ Redis error on key '{messages_key}'")
+                    self.logger.error(f"[{creator_name}]   Key type: {key_type} (expected: 'list')")
+                    self.logger.error(f"[{creator_name}]   Error: {str(redis_error)}")
+                    self.logger.error(f"[{creator_name}]   Solution: Delete this key with: docker exec of-redis redis-cli -p 6385 DEL \"{messages_key}\"")
 
                 if messages_batch:
                     async with self.async_session_maker() as session:

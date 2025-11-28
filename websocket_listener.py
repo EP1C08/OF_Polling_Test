@@ -66,12 +66,24 @@ class WebSocketListener:
 
             auth_details = load_auth(creator_id=self.creator_id)
             if not auth_details:
-                self.logger.error("Failed to load authentication")
+                self.logger.error("=" * 70)
+                self.logger.error("✗ AUTHENTICATION FAILED: Unable to load credentials")
+                self.logger.error(f"✗ Creator ID: {self.creator_id}")
+                self.logger.error(f"✗ Creator Name: {self.creator_name}")
+                self.logger.error("✗ Check auth_multi.json for this creator")
+                self.logger.error("=" * 70)
                 return False
 
             self.api, self.authed = await create_api_helper(auth_details, self.logger)
             if not self.authed:
-                self.logger.error("Failed to create authenticated API")
+                self.logger.error("=" * 70)
+                self.logger.error("✗ AUTHENTICATION FAILED: Unable to authenticate with OnlyFans")
+                self.logger.error(f"✗ Creator: {self.creator_name} (ID: {self.creator_id})")
+                self.logger.error("✗ Possible causes:")
+                self.logger.error("  - Invalid cookie/x_bc token")
+                self.logger.error("  - Expired session")
+                self.logger.error("  - Account disabled/inactive in auth_multi.json")
+                self.logger.error("=" * 70)
                 return False
 
             self.logger.info("✓ Authenticated with OnlyFans API")
@@ -391,7 +403,11 @@ async def main():
     )
 
     if not await listener.initialize():
-        print("✗ Failed to initialize WebSocket listener")
+        print("=" * 70)
+        print("✗ FATAL: Failed to initialize WebSocket listener")
+        print("✗ Authentication or component initialization failed")
+        print("✗ Container will exit now")
+        print("=" * 70)
         sys.exit(1)
 
     await listener.listen()
