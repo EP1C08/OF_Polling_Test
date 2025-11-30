@@ -23,7 +23,7 @@ from modules.logger import setup_logger
 class DatabaseWorker:
     """Database worker that manages multiple creator consumers using SQLAlchemy ORM."""
 
-    def __init__(self, db_url: str, redis_host: str = 'redis', redis_port: int = 6379):
+    def __init__(self, db_url: str, redis_host: str = 'redis', redis_port: int = 6385):
         """Initialize database worker.
 
         :param db_url: PostgreSQL connection string (will be converted to asyncpg format)
@@ -309,8 +309,11 @@ class DatabaseWorker:
             return len(items_data)
         except Exception as e:
             await session.rollback()
-            self.logger.error(f"✗ Failed to save bundle items batch: {str(e)}")
-            return 0
+            if 'ForeignKeyViolationError' in str(e) or 'bundle_items_bundle_id_fkey' in str(e):
+                return 0
+            else:
+                self.logger.error(f"✗ Failed to save bundle items batch: {str(e)}")
+                return 0
 
     async def save_interactions_batch(self, session: AsyncSession, interactions_data: List[Dict]) -> int:
         """Save multiple fan interactions to database using bulk insert.
@@ -331,8 +334,11 @@ class DatabaseWorker:
             return len(interactions_data)
         except Exception as e:
             await session.rollback()
-            self.logger.error(f"✗ Failed to save interactions batch: {str(e)}")
-            return 0
+            if 'ForeignKeyViolationError' in str(e) or 'bundle_fan_interactions_bundle_id_fkey' in str(e):
+                return 0
+            else:
+                self.logger.error(f"✗ Failed to save interactions batch: {str(e)}")
+                return 0
 
     async def save_analytics_batch(self, session: AsyncSession, analytics_data: List[Dict]) -> int:
         """Save multiple analytics records to database using bulk insert with upsert.
@@ -455,8 +461,14 @@ class DatabaseWorker:
 
                 if items_batch:
                     async with self.async_session_maker() as session:
-                        saved = await self.save_bundle_items_batch(session, items_batch)
-                        items_processed += saved
+                        try:
+                            saved = await self.save_bundle_items_batch(session, items_batch)
+                            items_processed += saved
+                        except Exception as e:
+                            if 'ForeignKeyViolationError' in str(e) or 'bundle_items_bundle_id_fkey' in str(e):
+                                self.logger.warning(f"[{creator_name}] ⚠️ Skipped {len(items_batch)} bundle_items (parent bundle not found - may have been skipped due to duplicate)")
+                            else:
+                                self.logger.error(f"[{creator_name}] ✗ Failed to save bundle items: {str(e)}")
                     del items_batch
 
                 interactions_key = self._get_list_key(creator_id, 'fan_interactions')
@@ -472,8 +484,14 @@ class DatabaseWorker:
 
                 if interactions_batch:
                     async with self.async_session_maker() as session:
-                        saved = await self.save_interactions_batch(session, interactions_batch)
-                        interactions_processed += saved
+                        try:
+                            saved = await self.save_interactions_batch(session, interactions_batch)
+                            interactions_processed += saved
+                        except Exception as e:
+                            if 'ForeignKeyViolationError' in str(e) or 'bundle_fan_interactions_bundle_id_fkey' in str(e):
+                                self.logger.warning(f"[{creator_name}] ⚠️ Skipped {len(interactions_batch)} fan_interactions (parent bundle not found - may have been skipped due to duplicate)")
+                            else:
+                                self.logger.error(f"[{creator_name}] ✗ Failed to save fan interactions: {str(e)}")
                     del interactions_batch
 
                 analytics_key = self._get_list_key(creator_id, 'analytics')
@@ -579,7 +597,7 @@ async def main():
         sys.exit(1)
 
     redis_host = os.getenv('REDIS_HOST', 'redis')
-    redis_port = int(os.getenv('REDIS_PORT', '6379'))
+    redis_port = int(os.getenv('REDIS_PORT', '6385'))
 
     worker = DatabaseWorker(db_url, redis_host, redis_port)
     await worker.run()

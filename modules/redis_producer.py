@@ -17,7 +17,7 @@ class RedisProducer:
     def __init__(
         self,
         redis_host: str = 'redis',
-        redis_port: int = 6379,
+        redis_port: int = 6385,
         redis_db: int = 0,
     ):
         """Initialize Redis producer.

@@ -83,7 +83,7 @@ python generate_compose.py test  # For testing with limited data
 ```
 
 This dynamically generates `docker-compose.generated.yml` (or `.test.yml`) based on creators in `auth_multi.json`:
-- 1 Redis instance (port 6379)
+- 1 Redis instance (port 6385)
 - 1 producer per creator (fetches messages, pushes to Redis)
 - 1 consumer per creator (reads from Redis, exports to CSV)
 - **1 database worker (reads from Redis, saves to PostgreSQL for ALL creators)**
@@ -102,6 +102,9 @@ docker-compose -f docker-compose.generated.yml up redis producer-* consumer-* --
 
 # Database Mode (with PostgreSQL)
 docker-compose -f docker-compose.generated.yml up redis producer-* db_worker --build -d
+
+# Real-time mode (24/7 WebSocket monitoring)
+docker-compose -f docker-compose.generated.yml up redis db_worker listener-* fan-sync-* --build -d
 
 # All services
 docker-compose -f docker-compose.generated.yml up --build -d
@@ -128,11 +131,11 @@ docker logs -f of-db-worker
 - `FAN_DELAY`: Seconds between batches (default: 5)
 - `FETCH_TIMEOUT`: Timeout per fan in seconds (default: 600 = 10 minutes)
 - `REAUTH_INTERVAL`: Reauthenticate every N fans (default: 100)
-- `REDIS_HOST`, `REDIS_PORT`: Redis connection (default: redis:6379)
+- `REDIS_HOST`, `REDIS_PORT`: Redis connection (default: redis:6385)
 
 **Database Worker:**
 - `DATABASE_URL`: PostgreSQL connection string (required for db mode)
-- `REDIS_HOST`, `REDIS_PORT`: Redis connection (default: redis:6379)
+- `REDIS_HOST`, `REDIS_PORT`: Redis connection (default: redis:6385)
 - `AUTH_FILE`: Path to auth_multi.json (default: /app/auth_multi.json)
 
 ## Real-Time WebSocket System
@@ -230,13 +233,13 @@ docker logs -f of-db-worker
 - `CREATOR_ID`: Creator's OnlyFans ID (required)
 - `CREATOR_NAME`: Display name for logs
 - `DATABASE_URL`: PostgreSQL connection string (required)
-- `REDIS_HOST`, `REDIS_PORT`: Redis connection (default: redis:6379)
+- `REDIS_HOST`, `REDIS_PORT`: Redis connection (default: redis:6385)
 
 **Fan Sync Worker:**
 - `CREATOR_ID`: Creator's OnlyFans ID (required)
 - `CREATOR_NAME`: Display name for logs
 - `DATABASE_URL`: PostgreSQL connection string (required)
-- `REDIS_HOST`, `REDIS_PORT`: Redis connection (default: redis:6379)
+- `REDIS_HOST`, `REDIS_PORT`: Redis connection (default: redis:6385)
 - `SYNC_INTERVAL`: Seconds between syncs (default: 14400 = 4 hours)
 
 ### Performance Comparison
@@ -304,10 +307,10 @@ python main.py
 redis-server --port 6385
 
 # Run producer (one per creator)
-CREATOR_ID=12345 CREATOR_NAME=CreatorName python producer.py
+REDIS_PORT=6385 CREATOR_ID=12345 CREATOR_NAME=CreatorName python producer.py
 
 # Run consumer (one per creator)
-CREATOR_ID=12345 CREATOR_NAME=CreatorName python consumer.py
+REDIS_PORT=6385 CREATOR_ID=12345 CREATOR_NAME=CreatorName python consumer.py
 ```
 
 ### Generate Docker Compose

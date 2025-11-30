@@ -302,7 +302,7 @@ async def main() -> None:
 
     # Connect to Redis
     redis_host = os.getenv('REDIS_HOST', 'redis')
-    redis_port = int(os.getenv('REDIS_PORT', '6379'))
+    redis_port = int(os.getenv('REDIS_PORT', '6385'))
     producer = RedisProducer(redis_host=redis_host, redis_port=redis_port)
 
     try:

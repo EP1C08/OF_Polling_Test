@@ -34,7 +34,7 @@ class FanSync:
         creator_name: str,
         db_url: str,
         redis_host: str = 'redis',
-        redis_port: int = 6379,
+        redis_port: int = 6385,
         sync_interval: int = 14400
     ):
         """Initialize fan sync worker.
@@ -346,7 +346,7 @@ async def main():
     creator_name = os.getenv('CREATOR_NAME', creator_id)
     db_url = os.getenv('DATABASE_URL')
     redis_host = os.getenv('REDIS_HOST', 'redis')
-    redis_port = int(os.getenv('REDIS_PORT', '6379'))
+    redis_port = int(os.getenv('REDIS_PORT', '6385'))
     sync_interval = int(os.getenv('SYNC_INTERVAL', '14400'))
 
     if not creator_id:

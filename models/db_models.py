@@ -89,6 +89,7 @@ class BundleItem(Base):
 
     __table_args__ = (
         Index('idx_bundle_items_bundle', 'bundle_id'),
+        Index('idx_bundle_items_composite', 'bundle_id', 'media_id', unique=True),
     )
 
 
@@ -108,7 +109,7 @@ class BundleFanInteraction(Base):
     __table_args__ = (
         Index('idx_bundle_interactions_bundle', 'bundle_id'),
         Index('idx_bundle_interactions_fan', 'fan_user_id'),
-        Index('idx_bundle_interactions_composite', 'bundle_id', 'fan_user_id'),
+        Index('idx_bundle_interactions_composite', 'bundle_id', 'fan_user_id', unique=True),
     )
 
 

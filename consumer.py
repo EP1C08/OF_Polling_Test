@@ -32,7 +32,7 @@ async def main() -> None:
 
     # Connect to Redis
     redis_host = os.getenv('REDIS_HOST', 'redis')
-    redis_port = int(os.getenv('REDIS_PORT', '6379'))
+    redis_port = int(os.getenv('REDIS_PORT', '6385'))
     output_dir = os.getenv('OUTPUT_DIR', '/app/output')
 
     consumer = RedisConsumer(

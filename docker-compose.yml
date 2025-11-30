@@ -6,10 +6,10 @@ services:
     image: redis:7-alpine
     container_name: of-redis
     ports:
-      - "6379:6379"
+      - "6385:6385"
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru
+    command: redis-server --port 6385 --appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru
     restart: unless-stopped
     networks:
       - of-network
@@ -29,7 +29,7 @@ services:
     environment:
       - CREATOR_ID=creator1  # Replace with actual creator ID or username
       - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      - REDIS_PORT=6385
       - AUTH_FILE=/app/auth_multi.json
       - CONCURRENT_FANS=3        # 3 fans at once
       - FAN_DELAY=5              # 5s sleep between batches
@@ -61,7 +61,7 @@ services:
     environment:
       - CREATOR_ID=creator1  # Must match producer
       - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      - REDIS_PORT=6385
       - OUTPUT_DIR=/app/output
     volumes:
       - ./output:/app/output
@@ -87,7 +87,7 @@ services:
     environment:
       - CREATOR_ID=creator2  # Replace with actual creator ID
       - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      - REDIS_PORT=6385
       - AUTH_FILE=/app/auth_multi.json
       - CONCURRENT_FANS=3        # 3 fans at once
       - FAN_DELAY=5              # 5s sleep between batches
@@ -119,7 +119,7 @@ services:
     environment:
       - CREATOR_ID=creator2  # Must match producer
       - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      - REDIS_PORT=6385
       - OUTPUT_DIR=/app/output
     volumes:
       - ./output:/app/output

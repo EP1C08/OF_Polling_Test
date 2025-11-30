@@ -20,7 +20,7 @@ class RedisConsumer:
         self,
         creator_id: str,
         redis_host: str = 'redis',
-        redis_port: int = 6379,
+        redis_port: int = 6385,
         redis_db: int = 0,
         output_dir: str = 'output',
         creator_name: str = None,
