@@ -5,7 +5,7 @@ Tables are created by the existing db_worker table creation logic.
 These models are for querying (WebSocket system and cutoff_manager).
 """
 
-from sqlalchemy import Text, Boolean, Index, Integer, DECIMAL, TIMESTAMP, ForeignKey
+from sqlalchemy import Text, Boolean, Index, Integer, DECIMAL, TIMESTAMP, ForeignKey, CheckConstraint
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from datetime import datetime
@@ -19,7 +19,7 @@ class Base(AsyncAttrs, DeclarativeBase):
 
 class Message(Base):
     """Message table model - matches db_worker.py schema."""
-    __tablename__ = 'messages'
+    __tablename__ = 'messages_new'
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     message_id: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
@@ -51,7 +51,7 @@ class Message(Base):
 
 class Bundle(Base):
     """Bundle table model - matches db_worker.py schema."""
-    __tablename__ = 'bundles'
+    __tablename__ = 'bundles_new'
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     bundle_id: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
@@ -78,10 +78,10 @@ class Bundle(Base):
 
 class BundleItem(Base):
     """Bundle items table model - matches db_worker.py schema."""
-    __tablename__ = 'bundle_items'
+    __tablename__ = 'bundle_items_new'
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    bundle_id: Mapped[str] = mapped_column(Text, ForeignKey('bundles.bundle_id', ondelete='CASCADE'), nullable=False)
+    bundle_id: Mapped[str] = mapped_column(Text, ForeignKey('bundles_new.bundle_id', ondelete='CASCADE'), nullable=False)
     media_id: Mapped[str] = mapped_column(Text, nullable=False)
     media_type: Mapped[str] = mapped_column(Text, nullable=False)
     duration: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
@@ -95,10 +95,10 @@ class BundleItem(Base):
 
 class BundleFanInteraction(Base):
     """Bundle fan interactions table model - matches db_worker.py schema."""
-    __tablename__ = 'bundle_fan_interactions'
+    __tablename__ = 'bundle_fan_interactions_new'
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    bundle_id: Mapped[str] = mapped_column(Text, ForeignKey('bundles.bundle_id', ondelete='CASCADE'), nullable=False)
+    bundle_id: Mapped[str] = mapped_column(Text, ForeignKey('bundles_new.bundle_id', ondelete='CASCADE'), nullable=False)
     fan_user_id: Mapped[str] = mapped_column(Text, nullable=False)
     message_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     sent_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
@@ -115,10 +115,10 @@ class BundleFanInteraction(Base):
 
 class BundleAnalytics(Base):
     """Bundle analytics table model - matches db_worker.py schema."""
-    __tablename__ = 'bundle_analytics'
+    __tablename__ = 'bundle_analytics_new'
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    bundle_id: Mapped[str] = mapped_column(Text, ForeignKey('bundles.bundle_id', ondelete='CASCADE'), unique=True, nullable=False)
+    bundle_id: Mapped[str] = mapped_column(Text, ForeignKey('bundles_new.bundle_id', ondelete='CASCADE'), unique=True, nullable=False)
     api_sent_count: Mapped[int] = mapped_column(Integer, default=0)
     api_viewed_count: Mapped[int] = mapped_column(Integer, default=0)
     api_purchased_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -137,4 +137,31 @@ class BundleAnalytics(Base):
     __table_args__ = (
         Index('idx_bundle_analytics_bundle', 'bundle_id'),
         Index('idx_bundle_analytics_conversion', 'conversion_rate'),
+    )
+
+
+class CreatorCredential(Base):
+    """Creator credentials table model - stores encrypted OnlyFans credentials."""
+    __tablename__ = 'creator_credentials'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    model_id: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    account_name: Mapped[str] = mapped_column(Text, nullable=False)
+    encrypted_email: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    encrypted_password: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    encrypted_auth_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    gologin_profile_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    auth_status: Mapped[str] = mapped_column(Text, default='not_authenticated', nullable=False)
+    status: Mapped[str] = mapped_column(Text, default='active', nullable=False)
+    last_auth_attempt: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    last_successful_auth: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=datetime.now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=datetime.now, onupdate=datetime.now, nullable=False)
+    created_by: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey('webapp_users.id'), nullable=True)
+
+    __table_args__ = (
+        Index('idx_creator_credentials_status', 'status'),
+        Index('idx_creator_credentials_auth_status', 'auth_status'),
+        CheckConstraint("auth_status IN ('not_authenticated', 'authenticated', 'failed')", name='ck_auth_status'),
+        CheckConstraint("status IN ('active', 'inactive')", name='ck_status'),
     )
