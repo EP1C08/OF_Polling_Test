@@ -248,19 +248,22 @@ async def main() -> None:
     logger = setup_logger(creator_name, log_type="producer")
 
     # Get configuration from environment
+    redis_host = os.getenv('REDIS_HOST', 'redis')
+    redis_port = int(os.getenv('REDIS_PORT', '6385'))
     reauth_interval = int(os.getenv('REAUTH_INTERVAL', '100'))  # Default: every 100 fans
     fan_delay = int(os.getenv('FAN_DELAY', '5'))  # Default: 5 seconds between batches
     fetch_timeout = int(os.getenv('FETCH_TIMEOUT', '600'))  # Default: 10 minutes
     concurrent_fans = int(os.getenv('CONCURRENT_FANS', '3'))  # Default: 3 fans at once
 
     logger.info("=" * 60)
-    logger.info(f"OnlyFans Message Producer (Concurrent Mode)")
-    logger.info(f"Creator ID: {creator_id}")
-    logger.info(f"Creator Name: {creator_name}")
-    logger.info(f"Concurrent fans: {concurrent_fans} at once")
-    logger.info(f"Reauth interval: every {reauth_interval} fans")
-    logger.info(f"Batch delay: {fan_delay}s between batches")
-    logger.info(f"Fast Fetcher: ENABLED (50-msg batches, auto-retry, NO TIMEOUT)")
+    logger.info(f"OnlyFans Message Producer")
+    logger.info("=" * 60)
+    logger.info(f"Creator: {creator_name} (ID: {creator_id})")
+    logger.info(f"Redis: {redis_host}:{redis_port}")
+    logger.info(f"Mode: Fast Fetcher (50-msg batches, auto-retry, NO TIMEOUT)")
+    logger.info(f"Concurrent fans: {concurrent_fans} workers (rolling window)")
+    logger.info(f"Reauth interval: Every {reauth_interval} fans")
+    logger.info(f"Progress logging: Every 20 fans")
     logger.info("=" * 60)
 
     # Load credentials for this specific creator
@@ -283,8 +286,6 @@ async def main() -> None:
         sys.exit(1)
 
     # Connect to Redis
-    redis_host = os.getenv('REDIS_HOST', 'redis')
-    redis_port = int(os.getenv('REDIS_PORT', '6385'))
     producer = RedisProducer(redis_host=redis_host, redis_port=redis_port)
 
     try:
@@ -365,134 +366,167 @@ async def main() -> None:
         # Create semaphore for concurrency control
         semaphore = asyncio.Semaphore(concurrent_fans)
 
-        # Process fans in batches of concurrent_fans
-        batch_size = concurrent_fans
-        for batch_start in range(0, len(conversations_data), batch_size):
-            batch = conversations_data[batch_start:batch_start + batch_size]
+        # Result tracking (initialize before processing)
+        success_count = 0
+        error_count = 0
+        rate_limit_count = 0
 
-            # Filter out already completed, heavy, or rate-limited fans
-            fans_to_process = []
-            for user_data in batch:
-                fan_id = user_data['id']
-                if checkpoint.is_completed(fan_id) or checkpoint.is_heavy_fan(fan_id) or checkpoint.is_rate_limited(fan_id):
-                    skipped_count += 1
-                    if skipped_count % 100 == 0:
-                        logger.info(f"⏩ Skipped {skipped_count} already-processed fans...")
-                    continue
-                fans_to_process.append(create_user_object_from_json(user_data))
-
-            if not fans_to_process:
+        # Filter out already completed, heavy, or rate-limited fans upfront
+        fans_to_process = []
+        for user_data in conversations_data:
+            fan_id = user_data['id']
+            if checkpoint.is_completed(fan_id) or checkpoint.is_heavy_fan(fan_id) or checkpoint.is_rate_limited(fan_id):
+                skipped_count += 1
+                if skipped_count % 100 == 0:
+                    logger.info(f"⏩ Skipped {skipped_count} already-processed fans...")
                 continue
+            fans_to_process.append(user_data)
 
-            # Log batch start
-            batch_num = (batch_start // batch_size) + 1
-            total_batches = (len(conversations_data) + batch_size - 1) // batch_size
+        if not fans_to_process:
+            logger.info("No fans to process (all completed/skipped)")
+        else:
+            # Create queue with all fans
+            fan_queue = asyncio.Queue()
+            for fan_data in fans_to_process:
+                await fan_queue.put(fan_data)
+
+            # Shared state for progress tracking
+            processed_lock = asyncio.Lock()
+            reauth_event = asyncio.Event()
+            reauth_event.set()  # Initially not reauthenticating
+
             logger.info(f"\n{'=' * 60}")
-            logger.info(f"Batch {batch_num}/{total_batches}: Processing {len(fans_to_process)} fan(s) concurrently")
+            logger.info(f"Starting {concurrent_fans} workers with rolling window...")
+            logger.info(f"Total fans to process: {len(fans_to_process)}")
+            logger.info(f"{'=' * 60}\n")
+
+            # Worker function
+            async def worker(worker_id: int):
+                nonlocal processed_count, authed, api, success_count, error_count, rate_limit_count
+
+                logger.info(f"  🚀 Worker {worker_id} started")
+
+                while True:
+                    try:
+                        fan_data = fan_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        logger.info(f"  ⏹️ Worker {worker_id} exiting (queue empty)")
+                        break
+
+                    logger.info(f"  📥 Worker {worker_id} grabbed fan {fan_data['username']} (ID: {fan_data['id']}) from queue")
+
+                    # Wait if reauthentication is happening
+                    await reauth_event.wait()
+
+                    fan_user = create_user_object_from_json(fan_data)
+                    logger.info(f"  🔄 Worker {worker_id} starting to process {fan_user.username}...")
+
+                    # Process the fan
+                    result = await process_single_fan(
+                        fan_user, authed, checkpoint, producer,
+                        creator_id_str, creator_username,
+                        fetch_timeout, logger, semaphore
+                    )
+
+                    logger.info(f"  ✅ Worker {worker_id} completed processing {fan_user.username} (result: {result.get('status') if isinstance(result, dict) else 'exception'})")
+
+                    # Update processed count and track results
+                    async with processed_lock:
+                        # Track result status
+                        if isinstance(result, Exception):
+                            error_count += 1
+                        else:
+                            status = result.get('status')
+                            if status == 'success' or status == 'empty':
+                                success_count += 1
+                                processed_count += 1
+                            elif status == 'rate_limit':
+                                rate_limit_count += 1
+                                fan_id = result['fan_id']
+                                fan_username = result['fan_username']
+                                checkpoint.mark_rate_limited(fan_id, fan_username, retry_count=0)
+                            elif status == 'error':
+                                error_count += 1
+
+                        current_count = processed_count
+                        remaining = fan_queue.qsize()
+
+                        # Log worker continuation
+                        if remaining > 0:
+                            logger.info(f"  ⚡ Worker {worker_id} finished {fan_user.username}, picking up next fan...")
+
+                        # Log progress every 20 fans
+                        if current_count % 20 == 0 and current_count > 0:
+                            logger.info(f"\n📊 Progress: {current_count} fans processed, {remaining} remaining\n")
+
+                        # Reauthenticate every 100 fans
+                        if current_count % reauth_interval == 0 and current_count > 0:
+                            # Pause all workers
+                            reauth_event.clear()
+                            logger.info(f"\n{'=' * 60}")
+                            logger.info(f"📊 Progress: {current_count} fans processed, {remaining} remaining")
+                            logger.info(f"{'=' * 60}")
+                            logger.info(f"🔄 Reauthenticating after {current_count} fans...")
+                            logger.info(f"⏸️  Pausing all workers...")
+
+                            # Wait a moment for other workers to pause
+                            await asyncio.sleep(0.5)
+                            logger.info(f"✓ All workers paused")
+
+                            # Close existing API session properly
+                            try:
+                                if hasattr(api, 'close_pool'):
+                                    await api.close_pool()
+                                    logger.info("✓ Closing existing API pool...")
+                            except Exception as e:
+                                logger.warning(f"⚠️ Warning during session close: {str(e)}")
+
+                            # Create new API instance and reauthenticate
+                            try:
+                                logger.info("✓ Creating new API instance...")
+                                api = OnlyFansAPI()
+                                authed = await authenticate_account(api, auth_details)
+                                if not authed:
+                                    logger.error(f"✗ Reauthentication failed for {auth_details.username}")
+                                    sys.exit(1)
+                                logger.info(f"✓ Reauthenticated successfully as {auth_details.username} (ID: {creator_id_str})")
+                            except Exception as e:
+                                logger.error(f"✗ Reauthentication error: {str(e)}")
+                                sys.exit(1)
+
+                            # Resume workers
+                            logger.info(f"▶️  Resuming all workers...")
+                            logger.info(f"{'=' * 60}\n")
+                            reauth_event.set()
+
+                    fan_queue.task_done()
+
+            # Launch workers
+            workers = [asyncio.create_task(worker(i)) for i in range(concurrent_fans)]
+            await asyncio.gather(*workers)
+
+            logger.info(f"\n{'=' * 60}")
+            logger.info(f"✓ All workers completed")
             logger.info(f"{'=' * 60}")
-
-            # Reauthenticate every N *processed* fans (not batches)
-            if processed_count > 0 and processed_count % reauth_interval == 0:
-                logger.info(f"\n{'=' * 60}")
-                logger.info(f"🔄 Reauthenticating after processing {processed_count} fans...")
-                logger.info(f"{'=' * 60}")
-
-                # Close existing API session properly
-                try:
-                    if hasattr(api, 'close_pool'):
-                        await api.close_pool()
-                        logger.info("  ✓ Closed existing API session")
-                except Exception as e:
-                    logger.warning(f"  ⚠️ Warning during session close: {str(e)}")
-
-                # Create new API instance and reauthenticate
-                try:
-                    api = OnlyFansAPI()
-                    authed = await authenticate_account(api, auth_details)
-                    if not authed:
-                        logger.error(f"  ✗ Reauthentication failed for {auth_details.username}")
-                        sys.exit(1)
-                    logger.info(f"  ✓ Reauthenticated successfully as {auth_details.username}")
-                except Exception as e:
-                    logger.error(f"  ✗ Reauthentication error: {str(e)}")
-                    sys.exit(1)
-
-            # Process batch concurrently
-            batch_start_time = time.time()
-            tasks = [
-                process_single_fan(fan, authed, checkpoint, producer, creator_id_str, creator_username,
-                                 fetch_timeout, logger, semaphore)
-                for fan in fans_to_process
-            ]
-
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            batch_duration = time.time() - batch_start_time
-
-            # Process results and handle rate limiting
-            success_count = 0
-            timeout_count = 0
-            rate_limit_count = 0
-            error_count = 0
-
-            for result in results:
-                if isinstance(result, Exception):
-                    logger.error(f"  ✗ Exception in batch: {str(result)}")
-                    error_count += 1
-                    continue
-
-                status = result.get('status')
-                if status == 'success' or status == 'empty':
-                    success_count += 1
-                    processed_count += 1
-                elif status == 'timeout':
-                    timeout_count += 1
-                    processed_count += 1
-                elif status == 'rate_limit':
-                    rate_limit_count += 1
-                    # Add to rate limit queue
-                    fan_id = result['fan_id']
-                    fan_username = result['fan_username']
-                    checkpoint.mark_rate_limited(fan_id, fan_username, retry_count=0)
-                    logger.warning(f"  ⚠️ {fan_username}: Added to rate limit retry queue")
-                elif status == 'error':
-                    error_count += 1
-
-            # Log batch summary
-            logger.info(f"\n{'─' * 60}")
-            logger.info(f"Batch {batch_num} Summary ({batch_duration:.2f}s):")
-            logger.info(f"  ✓ Success: {success_count}")
-            if timeout_count > 0:
-                logger.info(f"  ⏱️ Timeouts (deferred): {timeout_count}")
-            if rate_limit_count > 0:
-                logger.info(f"  ⚠️ Rate limited (will retry): {rate_limit_count}")
-            if error_count > 0:
-                logger.info(f"  ✗ Errors: {error_count}")
-            logger.info(f"{'─' * 60}")
-
-            # Cleanup batch
-            del fans_to_process, tasks, results
-            gc.collect()
-
-            # Sleep between batches (not between fans!)
-            if batch_start + batch_size < len(conversations_data):
-                logger.info(f"\n⏳ Waiting {fan_delay}s before next batch...")
-                await asyncio.sleep(fan_delay)
 
         # Calculate overall duration
         overall_duration = time.time() - start_time_overall
 
         # Print processing summary
         logger.info(f"\n{'=' * 60}")
-        logger.info("Processing Summary:")
-        logger.info(f"  All data pushed to Redis Lists successfully")
+        logger.info("Phase 1 Summary:")
         logger.info(f"{'=' * 60}")
-        logger.info(f"\nPhase 1 Complete - Normal Fans Processing:")
+        logger.info(f"  Total processed: {processed_count} fans")
+        if fans_to_process:
+            logger.info(f"  Success: {success_count}")
+            if rate_limit_count > 0:
+                logger.info(f"  Rate limited (will retry): {rate_limit_count}")
+            if error_count > 0:
+                logger.info(f"  Errors: {error_count}")
         logger.info(f"  Skipped (already processed): {skipped_count}")
-        logger.info(f"  Newly processed: {processed_count}")
-        logger.info(f"  Total in this run: {skipped_count + processed_count}")
-        logger.info(f"\nTotal Duration: {overall_duration:.2f}s ({overall_duration/60:.2f} minutes)")
+        logger.info(f"\n  Elapsed time: {overall_duration:.2f}s ({overall_duration/60:.2f} minutes)")
         if processed_count > 0:
-            logger.info(f"Average per fan: {overall_duration/processed_count:.2f}s")
+            logger.info(f"  Average per fan: {overall_duration/processed_count:.2f}s")
         logger.info(f"{'=' * 60}")
 
         # PHASE 2: Retry rate-limited fans (BEFORE heavy fans)
