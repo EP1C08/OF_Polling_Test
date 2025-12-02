@@ -20,7 +20,7 @@ from modules.authentication import load_auth, create_api_helper
 from modules.cutoff_manager import CutoffManager
 from modules.incremental_fetcher import IncrementalFetcher
 from modules.redis_producer import RedisProducer
-from modules.message_fetcher import fetch_all_messages
+from modules.message_fetcher import fetch_all_messages_fast
 from modules.bundle_processor import process_bundle_from_message
 
 

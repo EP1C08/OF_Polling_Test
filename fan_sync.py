@@ -20,7 +20,7 @@ from modules.logger import setup_logger
 from modules.authentication import load_auth, create_api_helper
 from modules.cutoff_manager import CutoffManager
 from modules.conversation_loader import load_conversations_from_json
-from modules.message_fetcher import fetch_all_messages
+from modules.message_fetcher import fetch_all_messages_fast
 from modules.bundle_processor import process_bundle_from_message, is_bundle
 from modules.redis_producer import RedisProducer
 
@@ -166,11 +166,11 @@ class FanSync:
                 self.logger.warning(f"⚠️ Could not get user object for fan {fan_id}")
                 return False
 
-            messages = await fetch_all_messages(
+            messages = await fetch_all_messages_fast(
                 user=user,
-                limit=20,
+                authed=self.authed,
                 cutoff_id=None,
-                authed=self.authed
+                logger=self.logger
             )
 
             if not messages:

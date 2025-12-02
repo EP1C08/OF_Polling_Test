@@ -116,7 +116,15 @@ class DatabaseWorker:
             )
 
             async with self.engine.begin() as conn:
-                await conn.run_sync(Base.metadata.create_all)
+                try:
+                    await conn.run_sync(Base.metadata.create_all)
+                except Exception as e:
+                    # Ignore if tables/indexes already exist
+                    error_str = str(e).lower()
+                    if 'already exists' in error_str or 'duplicate' in error_str:
+                        self.logger.info("Tables/indexes already exist, skipping creation")
+                    else:
+                        raise e
 
             self.logger.info("✓ Database ready")
             return True
