@@ -53,11 +53,9 @@ async def process_single_fan(
         fan_start_time = time.time()
 
         try:
-            # Fetch messages with timeout using fast fetcher (2.5x faster with 50-msg batches + retry)
-            messages = await asyncio.wait_for(
-                fetch_all_messages_fast(fan_user, authed, logger=logger),
-                timeout=fetch_timeout
-            )
+            # Fetch messages using fast fetcher (2.5x faster with 50-msg batches + retry)
+            # NO TIMEOUT - let it complete naturally (fast fetcher has built-in retry logic)
+            messages = await fetch_all_messages_fast(fan_user, authed, logger=logger)
 
             if not messages:
                 logger.info(f"  No messages found for {fan_user.username}")
@@ -102,19 +100,6 @@ async def process_single_fan(
                 'fan_id': fan_user.id,
                 'fan_username': fan_user.username,
                 'elapsed': total_duration
-            }
-
-        except asyncio.TimeoutError:
-            # Heavy fan - timeout during fetch
-            fan_duration = time.time() - fan_start_time
-            logger.warning(f"  ⏱️ {fan_user.username}: Timeout after {fan_duration:.2f}s - Marking as heavy fan")
-            checkpoint.mark_heavy_fan(fan_user.id, fan_user.username)
-            await producer.push_heavy_fan(creator_id_str, str(fan_user.id), fan_user.username)
-            return {
-                'status': 'timeout',
-                'fan_id': fan_user.id,
-                'fan_username': fan_user.username,
-                'elapsed': fan_duration
             }
 
         except Exception as e:
@@ -198,12 +183,9 @@ async def retry_rate_limited_fan(
         checkpoint.mark_rate_limited(fan_id, fan_username, retry_count + 1)
         return {'status': 'rate_limit', 'fan_id': fan_id, 'fan_username': fan_username}
 
-    # Try fetching again using fast fetcher
+    # Try fetching again using fast fetcher (no timeout)
     try:
-        messages = await asyncio.wait_for(
-            fetch_all_messages_fast(user_obj, authed, logger=logger),
-            timeout=fetch_timeout
-        )
+        messages = await fetch_all_messages_fast(user_obj, authed, logger=logger)
 
         if not messages:
             logger.info(f"  No messages found for {fan_username}")
@@ -278,8 +260,7 @@ async def main() -> None:
     logger.info(f"Concurrent fans: {concurrent_fans} at once")
     logger.info(f"Reauth interval: every {reauth_interval} fans")
     logger.info(f"Batch delay: {fan_delay}s between batches")
-    logger.info(f"Fetch timeout: {fetch_timeout}s ({fetch_timeout/60:.1f} minutes)")
-    logger.info(f"Fast Fetcher: ENABLED (50-msg batches, auto-retry)")
+    logger.info(f"Fast Fetcher: ENABLED (50-msg batches, auto-retry, NO TIMEOUT)")
     logger.info("=" * 60)
 
     # Load credentials for this specific creator
