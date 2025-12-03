@@ -186,32 +186,60 @@ class FanSync:
             fan_interactions_list = []
 
             for message in messages:
-                author_id = str(message.author.id)
+                if isinstance(message, dict):
+                    from_user = message.get("fromUser", {}) or {}
+                    author_id = str(from_user.get("id", ""))
+                    author_username = from_user.get("username", f"u{from_user.get('id', '')}")
+                    message_id = str(message.get("id", ""))
+                    message_text = message.get("text", "") or ""
+                    message_price = message.get("price", 0) or 0
+                    message_is_free = message.get("isFree", True)
+                    message_can_purchase = message.get("canPurchase", True)
+                    message_created_at = message.get("createdAt") or message.get("created_at")
+                    message_media = message.get("media", []) or []
+                else:
+                    author_id = str(message.author.id)
+                    author_username = message.author.username
+                    message_id = str(message.id)
+                    message_text = message.text or ""
+                    message_price = message.price if hasattr(message, 'price') else 0
+                    message_is_free = message.isFree if hasattr(message, 'isFree') else True
+                    message_can_purchase = message.canPurchase if hasattr(message, 'canPurchase') else True
+                    message_created_at = message.created_at
+                    message_media = message.media if hasattr(message, 'media') else []
+
                 is_from_creator = (author_id == self.creator_id)
 
                 media_id = ''
                 media_type = ''
-                if message.media and len(message.media) > 0:
-                    first_media = message.media[0]
+                if message_media and len(message_media) > 0:
+                    first_media = message_media[0]
                     media_id = str(first_media.get('id', ''))
                     media_type = first_media.get('type', '').lower()
 
+                created_at_str = None
+                if message_created_at:
+                    if isinstance(message_created_at, str):
+                        created_at_str = message_created_at
+                    else:
+                        created_at_str = message_created_at.isoformat()
+
                 message_dict = {
-                    'message_id': str(message.id),
+                    'message_id': message_id,
                     'model_id': self.creator_id,
                     'fan_id': fan_id,
                     'sender_id': author_id,
                     'model_name': self.creator_name,
-                    'sender_username': message.author.username,
-                    'message': message.text or '',
+                    'sender_username': author_username,
+                    'message': message_text,
                     'message_type': 'bundle' if is_bundle(message) else ('media' if media_id else 'text'),
                     'media_id': media_id,
                     'media_type': media_type,
-                    'price': float(message.price) if message.price else 0.0,
-                    'is_free': message.isFree if hasattr(message, 'isFree') else True,
-                    'is_purchased': message.canPurchase is False if hasattr(message, 'canPurchase') else False,
+                    'price': float(message_price) if message_price else 0.0,
+                    'is_free': message_is_free,
+                    'is_purchased': message_can_purchase is False,
                     'is_from_me': is_from_creator,
-                    'created_at': message.created_at.isoformat() if message.created_at else None,
+                    'created_at': created_at_str,
                     'fetched_at': fetched_at.isoformat()
                 }
                 try:

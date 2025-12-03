@@ -187,39 +187,6 @@ def generate_docker_compose(
                 'REAUTH_INTERVAL=100'   # Reauthenticate every 100 fans
             ])
 
-        # Consumer service
-        consumer_service = f'consumer-{creator_name}'
-        output_path = './test_output:/app/output' if is_test else './output:/app/output'
-
-        compose_dict['services'][consumer_service] = {
-            'build': {
-                'context': '.',
-                'dockerfile': 'Dockerfile.consumer'
-            },
-            'container_name': f'{container_prefix}-consumer-{creator_name}',
-            'environment': [
-                f'CREATOR_ID={creator_id}',
-                f'CREATOR_NAME={creator["name"]}',
-                f'REDIS_HOST={redis_name}',
-                f'REDIS_PORT={redis_internal_port}',
-                'OUTPUT_DIR=/app/output'
-            ],
-            'volumes': [output_path, './logs:/app/logs'],
-            'depends_on': [redis_name],
-            'restart': 'no',  # Exit when done (don't restart)
-            'networks': [network_name],
-            'deploy': {
-                'resources': {
-                    'limits': {
-                        'memory': '512M'
-                    },
-                    'reservations': {
-                        'memory': '128M'
-                    }
-                }
-            }
-        }
-
         # WebSocket Listener service (24/7 real-time notifications)
         listener_service = f'listener-{creator_name}'
         compose_dict['services'][listener_service] = {
@@ -340,16 +307,14 @@ def generate_docker_compose(
     print(f"  Redis: 1 container")
     print(f"  Creators: {len(creators)}")
     print(f"  Producers: {len(creators)} containers (initial data collection)")
-    print(f"  Consumers: {len(creators)} containers (CSV export, optional)")
     print(f"  Database Worker: 1 container (handles all creators)")
     print(f"  WebSocket Listeners: {len(creators)} containers (24/7 real-time)")
     print(f"  Fan Sync Workers: {len(creators)} containers (every 4 hours)")
-    print(f"  Total: {2 + len(creators) * 4} containers")
+    print(f"  Total: {2 + len(creators) * 3} containers")
     print(f"\nCreators: {', '.join([c['name'] for c in creators])}")
     print(f"\nUsage:")
     print(f"  Initial setup:  docker-compose -f {output_file} up redis producer-* db_worker --build -d")
     print(f"  Real-time mode: docker-compose -f {output_file} up redis db_worker listener-* fan-sync-* --build -d")
-    print(f"  CSV mode:       docker-compose -f {output_file} up redis producer-* consumer-* --build -d")
 
     return output_file
 

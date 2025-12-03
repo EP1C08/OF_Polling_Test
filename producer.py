@@ -117,8 +117,11 @@ async def process_single_fan(
                     'elapsed': fan_duration
                 }
 
-            # Other errors
+            # Other errors - log full traceback for WRONGTYPE debugging
             logger.error(f"  ✗ {fan_user.username}: Error - {error_msg} (failed after {fan_duration:.2f}s)")
+            if 'WRONGTYPE' in error_msg:
+                import traceback
+                logger.error(f"  WRONGTYPE Traceback:\n{traceback.format_exc()}")
             # Error tracking disabled (push_error removed with Stream conversion)
             return {
                 'status': 'error',
