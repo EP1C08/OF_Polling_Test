@@ -205,14 +205,48 @@ class WebSocketListener:
 
             self.logger.info(f"📨 New message from fan {fan_id}")
 
-            # Process this fan's messages in the background to avoid blocking other notifications
+            # Process this fan's messages in the background with Redis-based locking to prevent race conditions
             import asyncio
-            asyncio.create_task(self._fetch_and_process_messages(fan_id))
+            asyncio.create_task(self._fetch_with_redis_lock(fan_id))
 
         except Exception as e:
             self.logger.error(f"✗ Error processing message event: {str(e)}")
             import traceback
             self.logger.error(traceback.format_exc())
+
+    async def _fetch_with_redis_lock(self, fan_id: str):
+        """Fetch messages with Redis-based distributed lock to prevent race conditions.
+
+        :param fan_id: Fan's OnlyFans ID
+        """
+        lock_key = f"of:{self.creator_id}:processing_lock:{fan_id}"
+        lock_ttl = 60
+
+        try:
+            lock_acquired = await self.redis_producer.redis.set(
+                lock_key,
+                "1",
+                ex=lock_ttl,
+                nx=True
+            )
+
+            if not lock_acquired:
+                self.logger.debug(f"⏭️ Fan {fan_id} already being processed, skipping duplicate event")
+                return
+
+            self.logger.debug(f"🔒 Acquired processing lock for fan {fan_id}")
+            await self._fetch_and_process_messages(fan_id)
+
+        except Exception as e:
+            self.logger.error(f"✗ Error in Redis lock processing for fan {fan_id}: {str(e)}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+        finally:
+            try:
+                await self.redis_producer.redis.delete(lock_key)
+                self.logger.debug(f"🔓 Released processing lock for fan {fan_id}")
+            except Exception as e:
+                self.logger.debug(f"⚠️ Could not release lock for fan {fan_id}: {str(e)}")
 
     async def _fetch_and_process_messages(self, fan_id: str):
         """Fetch and process messages for a fan in the background.
