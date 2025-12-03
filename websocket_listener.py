@@ -228,7 +228,7 @@ class WebSocketListener:
                 self.logger.info(f"🆕 NEW FAN DETECTED: {fan_id} - Adding to priority queue")
 
                 # Push to Redis priority queue (LPUSH = add to front)
-                await self.redis_producer.redis_client.lpush(
+                await self.redis_producer.redis.lpush(
                     f"of:{self.creator_id}:new_fans_priority",
                     fan_id
                 )
