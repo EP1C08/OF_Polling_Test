@@ -257,6 +257,40 @@ def generate_docker_compose(
             }
         }
 
+        # New Fan Processor service (priority queue for new fans detected by WebSocket)
+        new_fan_processor_service = f'new-fan-processor-{creator_name}'
+        compose_dict['services'][new_fan_processor_service] = {
+            'build': {
+                'context': '.',
+                'dockerfile': 'Dockerfile.new_fan_processor'
+            },
+            'container_name': f'{container_prefix}-new-fan-processor-{creator_name}',
+            'environment': [
+                f'CREATOR_ID={creator_id}',
+                f'CREATOR_NAME={creator["name"]}',
+                f'REDIS_HOST={redis_name}',
+                f'REDIS_PORT={redis_internal_port}'
+            ],
+            'volumes': [
+                './auth_multi.json:/app/auth_multi.json:ro',
+                './test_checkpoints:/app/checkpoints' if is_test else './checkpoints:/app/checkpoints',
+                './test_logs:/app/logs' if is_test else './logs:/app/logs'
+            ],
+            'depends_on': [redis_name, db_worker_service],
+            'restart': 'unless-stopped',  # Auto-restart on failure
+            'networks': [network_name],
+            'deploy': {
+                'resources': {
+                    'limits': {
+                        'memory': '1G'  # Similar to producer (needs to fetch full histories)
+                    },
+                    'reservations': {
+                        'memory': '256M'
+                    }
+                }
+            }
+        }
+
     # Database Worker service (multi-creator support)
     compose_dict['services'][db_worker_service] = {
         'build': {
@@ -310,11 +344,12 @@ def generate_docker_compose(
     print(f"  Database Worker: 1 container (handles all creators)")
     print(f"  WebSocket Listeners: {len(creators)} containers (24/7 real-time)")
     print(f"  Fan Sync Workers: {len(creators)} containers (every 4 hours)")
-    print(f"  Total: {2 + len(creators) * 3} containers")
+    print(f"  New Fan Processors: {len(creators)} containers (priority queue)")
+    print(f"  Total: {2 + len(creators) * 4} containers")
     print(f"\nCreators: {', '.join([c['name'] for c in creators])}")
     print(f"\nUsage:")
     print(f"  Initial setup:  docker-compose -f {output_file} up redis producer-* db_worker --build -d")
-    print(f"  Real-time mode: docker-compose -f {output_file} up redis db_worker listener-* fan-sync-* --build -d")
+    print(f"  Real-time mode: docker-compose -f {output_file} up redis db_worker listener-* fan-sync-* new-fan-processor-* --build -d")
 
     return output_file
 

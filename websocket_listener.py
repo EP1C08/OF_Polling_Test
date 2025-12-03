@@ -220,6 +220,25 @@ class WebSocketListener:
         :param fan_id: Fan's OnlyFans ID
         """
         try:
+            # Check if this is a new fan (not in database)
+            cutoff_id = await self.cutoff_manager.get_cutoff_id(self.creator_id, fan_id)
+
+            if cutoff_id is None:
+                # NEW FAN DETECTED - Route to priority queue for full history fetch
+                self.logger.info(f"🆕 NEW FAN DETECTED: {fan_id} - Adding to priority queue")
+
+                # Push to Redis priority queue (LPUSH = add to front)
+                await self.redis_producer.redis_client.lpush(
+                    f"of:{self.creator_id}:new_fans_priority",
+                    fan_id
+                )
+
+                self.logger.info(f"✓ Fan {fan_id} queued for priority processing (full history fetch)")
+                return  # Don't fetch here, let new_fan_processor handle it
+
+            # KNOWN FAN - Fetch only new messages (incremental)
+            self.logger.debug(f"Known fan {fan_id}, fetching incremental messages (cutoff_id={cutoff_id})")
+
             user = await self.authed.get_user(fan_id)
             if not user:
                 self.logger.warning(f"⚠️ Could not get user object for fan {fan_id}")
