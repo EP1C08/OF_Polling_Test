@@ -205,8 +205,28 @@ class WebSocketListener:
 
             self.logger.info(f"📨 New message from fan {fan_id}")
 
+            # Publish to Redis Pub/Sub IMMEDIATELY for real-time external consumption
+            # Extract message from raw WebSocket event (the triggering message)
+            if raw_data and isinstance(raw_data, str):
+                try:
+                    ws_parsed = json.loads(raw_data)
+                    if 'api2_chat_message' in ws_parsed:
+                        ws_message = ws_parsed['api2_chat_message']
+                        msg_text = ws_message.get('text', '') or ''
+                        msg_created_at = ws_message.get('createdAt', '') or ''
+
+                        await self.redis_producer.publish_to_pubsub(
+                            creator_id=self.creator_id,
+                            creator_name=self.creator_name,
+                            fan_id=fan_id,
+                            message=msg_text,
+                            created_at=msg_created_at
+                        )
+                        self.logger.info(f"📤 Published to Pub/Sub for fan {fan_id}")
+                except Exception as pubsub_err:
+                    self.logger.warning(f"⚠️ Failed to publish to Pub/Sub: {str(pubsub_err)}")
+
             # Process this fan's messages in the background with Redis-based locking to prevent race conditions
-            import asyncio
             asyncio.create_task(self._fetch_with_redis_lock(fan_id))
 
         except Exception as e:

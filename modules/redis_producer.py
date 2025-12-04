@@ -1,6 +1,7 @@
 """Redis List Producer.
 
 Fetches raw messages and pushes them to Redis Lists.
+Also publishes to Redis Pub/Sub for external project consumption.
 """
 
 import redis.asyncio as aioredis
@@ -9,6 +10,9 @@ import asyncio
 from datetime import datetime
 from typing import Optional, Dict, Any
 from modules.sanitizer import sanitize_dict, sanitize_text
+
+# Pub/Sub configuration
+PUBSUB_PREFIX = "of:pubsub"
 
 
 class RedisProducer:
@@ -185,3 +189,48 @@ class RedisProducer:
         done_key = f"of:{creator_id}:producer_done"
         await self.redis.set(done_key, "1", ex=3600)  # Expire in 1 hour
         print(f"✓ Marked producer as done for creator {creator_id}")
+
+    def _get_pubsub_channel(self, creator_id: str) -> str:
+        """Generate Redis Pub/Sub channel for creator.
+
+        :param creator_id: Creator's OnlyFans ID
+        :return: Redis Pub/Sub channel name
+        """
+        return f"{PUBSUB_PREFIX}:{creator_id}:new_messages"
+
+    async def publish_to_pubsub(
+        self,
+        creator_id: str,
+        creator_name: str,
+        fan_id: str,
+        message: str,
+        created_at: str
+    ) -> int:
+        """Publish new message event to Redis Pub/Sub for external consumers.
+
+        :param creator_id: Creator's OnlyFans ID
+        :param creator_name: Creator's display name
+        :param fan_id: Fan's OnlyFans ID
+        :param message: Message text content
+        :param created_at: ISO8601 timestamp when message was created
+        :return: Number of subscribers that received the message
+        """
+        if not self.redis:
+            raise RuntimeError("Redis not connected")
+
+        channel = self._get_pubsub_channel(creator_id)
+
+        payload = {
+            'event_type': 'new_message',
+            'fan_id': str(fan_id),
+            'creator_id': str(creator_id),
+            'creator_name': creator_name,
+            'message': sanitize_text(message) if message else '',
+            'created_at': created_at or '',
+            'published_at': datetime.now().isoformat()
+        }
+
+        # PUBLISH returns number of subscribers that received the message
+        num_subscribers = await self.redis.publish(channel, json.dumps(payload, ensure_ascii=False))
+
+        return num_subscribers
