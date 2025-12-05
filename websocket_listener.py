@@ -205,28 +205,8 @@ class WebSocketListener:
 
             self.logger.info(f"📨 New message from fan {fan_id}")
 
-            # Publish to Redis Pub/Sub IMMEDIATELY for real-time external consumption
-            # Extract message from raw WebSocket event (the triggering message)
-            if raw_data and isinstance(raw_data, str):
-                try:
-                    ws_parsed = json.loads(raw_data)
-                    if 'api2_chat_message' in ws_parsed:
-                        ws_message = ws_parsed['api2_chat_message']
-                        msg_text = ws_message.get('text', '') or ''
-                        msg_created_at = ws_message.get('createdAt', '') or ''
-
-                        await self.redis_producer.publish_to_pubsub(
-                            creator_id=self.creator_id,
-                            creator_name=self.creator_name,
-                            fan_id=fan_id,
-                            message=msg_text,
-                            created_at=msg_created_at
-                        )
-                        self.logger.info(f"📤 Published to Pub/Sub for fan {fan_id}")
-                except Exception as pubsub_err:
-                    self.logger.warning(f"⚠️ Failed to publish to Pub/Sub: {str(pubsub_err)}")
-
-            # Process this fan's messages in the background with Redis-based locking to prevent race conditions
+            # Process this fan's messages in the background with Redis-based locking
+            # Pub/Sub publish happens AFTER messages are fetched and saved to Redis
             asyncio.create_task(self._fetch_with_redis_lock(fan_id))
 
         except Exception as e:
@@ -291,7 +271,7 @@ class WebSocketListener:
                 return  # Don't fetch here, let new_fan_processor handle it
 
             # KNOWN FAN - Fetch only new messages (incremental)
-            self.logger.debug(f"Known fan {fan_id}, fetching incremental messages (cutoff_id={cutoff_id})")
+            self.logger.info(f"🔄 Fetching new messages for fan {fan_id} (cutoff_id={cutoff_id})")
 
             user = await self.authed.get_user(fan_id)
             if not user:
@@ -321,32 +301,36 @@ class WebSocketListener:
             fan_interactions_list = []
 
             for message in messages:
-                author_id = str(message.author.id)
+                # FastMessageFetcher returns raw dicts from API
+                from_user = message.get('fromUser', {}) or {}
+                author_id = str(from_user.get('id', ''))
+                author_username = from_user.get('username', '')
                 is_from_creator = (author_id == self.creator_id)
 
                 media_id = ''
                 media_type = ''
-                if message.media and len(message.media) > 0:
-                    first_media = message.media[0]
+                media_list = message.get('media', []) or []
+                if media_list and len(media_list) > 0:
+                    first_media = media_list[0]
                     media_id = str(first_media.get('id', ''))
                     media_type = first_media.get('type', '').lower()
 
                 message_dict = {
-                    'message_id': str(message.id),
+                    'message_id': str(message.get('id', '')),
                     'model_id': self.creator_id,
                     'fan_id': fan_id,
                     'sender_id': author_id,
                     'model_name': self.creator_name,
-                    'sender_username': message.author.username,
-                    'message': message.text or '',
+                    'sender_username': author_username,
+                    'message': message.get('text') or '',
                     'message_type': 'bundle' if is_bundle(message) else ('media' if media_id else 'text'),
                     'media_id': media_id,
                     'media_type': media_type,
-                    'price': float(message.price) if message.price else 0.0,
-                    'is_free': message.isFree if hasattr(message, 'isFree') else True,
-                    'is_purchased': message.canPurchase is False if hasattr(message, 'canPurchase') else False,
+                    'price': float(message.get('price', 0) or 0),
+                    'is_free': message.get('isFree', True),
+                    'is_purchased': message.get('canPurchase') is False,
                     'is_from_me': is_from_creator,
-                    'created_at': message.created_at.isoformat() if message.created_at else None,
+                    'created_at': message.get('createdAt'),
                     'fetched_at': fetched_at.isoformat()
                 }
 
@@ -378,6 +362,25 @@ class WebSocketListener:
                 await self.redis_producer.push_fan_interactions(self.creator_id, fan_interactions_list)
 
             self.logger.info(f"✓ Processed {len(messages)} new message(s) from fan {fan_id}")
+
+            # Publish to Pub/Sub AFTER messages are saved to Redis
+            # This ensures external consumers can query the data
+            if messages:
+                latest_msg = messages[0]  # Most recent message (list is newest-first)
+                msg_text = latest_msg.get('text', '') or ''
+                msg_created_at = latest_msg.get('createdAt', '') or ''
+
+                try:
+                    await self.redis_producer.publish_to_pubsub(
+                        creator_id=self.creator_id,
+                        creator_name=self.creator_name,
+                        fan_id=fan_id,
+                        message=msg_text,
+                        created_at=msg_created_at
+                    )
+                    self.logger.info(f"📤 Published to Pub/Sub for fan {fan_id}")
+                except Exception as pubsub_err:
+                    self.logger.warning(f"⚠️ Failed to publish to Pub/Sub: {str(pubsub_err)}")
 
         except Exception as e:
             self.logger.error(f"✗ Error fetching/processing messages for fan {fan_id}: {str(e)}")

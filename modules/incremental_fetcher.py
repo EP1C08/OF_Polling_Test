@@ -1,11 +1,15 @@
 """Incremental Fetcher - Fetch only new messages using cutoff_id.
 
-Wraps the existing fetch_all_messages() function to support incremental fetching.
-Only fetches messages newer than the last known message_id from database.
+Uses FastMessageFetcher which does proper post-fetch client-side filtering.
+The library's built-in get_messages(cutoff_id=...) doesn't filter correctly -
+it still returns messages beyond the cutoff point.
+
+FastMessageFetcher filters each message against cutoff_id and stops when
+it encounters a message at or below the cutoff.
 """
 
 from typing import Optional, List, Dict
-from modules.message_fetcher import fetch_all_messages
+from modules.fast_message_fetcher import FastMessageFetcher
 from modules.cutoff_manager import CutoffManager
 import logging
 
@@ -21,6 +25,18 @@ class IncrementalFetcher:
         """
         self.cutoff_manager = cutoff_manager
         self.logger = logger or logging.getLogger(__name__)
+        self._fetcher_cache = {}
+
+    def _get_fetcher(self, authed) -> FastMessageFetcher:
+        """Get or create a FastMessageFetcher for the authed instance.
+
+        :param authed: Authenticated API instance
+        :return: FastMessageFetcher instance
+        """
+        authed_id = id(authed)
+        if authed_id not in self._fetcher_cache:
+            self._fetcher_cache[authed_id] = FastMessageFetcher(authed, self.logger)
+        return self._fetcher_cache[authed_id]
 
     async def fetch_new_messages(
         self,
@@ -32,13 +48,24 @@ class IncrementalFetcher:
     ) -> List[Dict]:
         """Fetch only new messages for a fan using cutoff_id.
 
+        Uses FastMessageFetcher which does proper post-fetch filtering:
+        - Fetches messages in 50-message batches via direct API
+        - Filters out messages where id <= cutoff_id
+        - Stops fetching when cutoff is reached
+
+        Note: Returns raw dicts from API, not Message objects.
+
         :param user: OnlyFans user object (fan)
         :param model_id: Creator's OnlyFans ID
         :param fan_id: Fan's OnlyFans ID
-        :param authed: Authenticated API instance
-        :param limit: Pagination limit (default: 20)
-        :return: List of new message dictionaries
+        :param authed: Authenticated API instance (required)
+        :param limit: Pagination limit (not used - FastMessageFetcher uses 50)
+        :return: List of raw message dicts from API
         """
+        if not authed:
+            self.logger.error(f"✗ No authed instance provided for fan {fan_id}")
+            return []
+
         try:
             cutoff_id = await self.cutoff_manager.get_cutoff_id(model_id, fan_id)
 
@@ -47,11 +74,10 @@ class IncrementalFetcher:
             else:
                 self.logger.debug(f"No cutoff_id found for fan {fan_id}, fetching all messages")
 
-            messages = await fetch_all_messages(
+            fetcher = self._get_fetcher(authed)
+            messages = await fetcher.fetch_all_messages(
                 user=user,
-                limit=limit,
-                cutoff_id=cutoff_id,
-                authed=authed
+                cutoff_id=cutoff_id
             )
 
             if messages:

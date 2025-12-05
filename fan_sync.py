@@ -23,6 +23,7 @@ from modules.conversation_loader import load_conversations_from_json
 from modules.message_fetcher import fetch_all_messages_fast
 from modules.bundle_processor import process_bundle_from_message, is_bundle
 from modules.redis_producer import RedisProducer
+from modules.checkpoint import CheckpointManager
 
 
 class FanSync:
@@ -58,6 +59,7 @@ class FanSync:
         self.authed = None
         self.cutoff_manager = None
         self.redis_producer = None
+        self.checkpoint = CheckpointManager(creator_name)
 
     async def initialize(self) -> bool:
         """Initialize all components.
@@ -151,6 +153,26 @@ class FanSync:
         except Exception as e:
             self.logger.error(f"✗ Failed to load conversations: {str(e)}")
             return set()
+
+    def get_checkpoint_fans(self) -> Set[str]:
+        """Get all fan IDs currently tracked in checkpoint.
+
+        Includes: completed, in_progress, heavy, rate_limited, and failed fans.
+        These should not be re-processed by fan_sync.
+
+        :return: Set of fan IDs in checkpoint
+        """
+        checkpoint_fans = set()
+
+        checkpoint_fans.update(self.checkpoint.completed_fan_ids)
+        checkpoint_fans.update(self.checkpoint.in_progress_fan_ids)
+        checkpoint_fans.update(self.checkpoint.heavy_fan_ids)
+        checkpoint_fans.update(self.checkpoint.failed_fan_ids)
+
+        for rate_limited in self.checkpoint.rate_limited_fans:
+            checkpoint_fans.add(rate_limited['fan_id'])
+
+        return checkpoint_fans
 
     async def process_new_fan(self, fan_id: str) -> bool:
         """Fetch and save complete message history for a new fan.
@@ -290,12 +312,22 @@ class FanSync:
 
             known_fans = await self.get_known_fans_from_db()
             all_fans = await self.get_all_fans_from_conversations()
+            checkpoint_fans = self.get_checkpoint_fans()
 
             if not all_fans:
                 self.logger.warning("No fans loaded from conversations, skipping sync")
                 return
 
-            new_fans = all_fans - known_fans
+            self.logger.info(f"  Database: {len(known_fans)} known fans")
+            self.logger.info(f"  Checkpoint: {len(checkpoint_fans)} tracked fans")
+            if self.checkpoint.in_progress_fan_ids:
+                self.logger.info(f"    - In progress: {len(self.checkpoint.in_progress_fan_ids)}")
+            if self.checkpoint.heavy_fan_ids:
+                self.logger.info(f"    - Heavy (deferred): {len(self.checkpoint.heavy_fan_ids)}")
+            if self.checkpoint.rate_limited_fans:
+                self.logger.info(f"    - Rate limited: {len(self.checkpoint.rate_limited_fans)}")
+
+            new_fans = all_fans - known_fans - checkpoint_fans
 
             if not new_fans:
                 self.logger.info("✓ No new fans detected")
