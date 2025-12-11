@@ -1,10 +1,14 @@
-"""WebSocket Listener - 24/7 Real-Time Message Notifications.
+"""WebSocket Listener - 24/7 Real-Time Event Detection.
 
 Listens to OnlyFans WebSocket for instant message notifications.
 When a new message event is received:
-1. Query database for last known message_id (cutoff_id)
-2. Fetch only new messages using incremental fetcher
-3. Push to Redis lists for db_worker to save
+1. Query database to check if fan exists (has messages in messages_new table)
+2. Route to appropriate Redis queue:
+   - NEW fan (not in DB) → new_fans_priority queue → new_fan_processor
+   - KNOWN fan (in DB) → known_fans_queue → known_fan_processor
+
+This listener is EVENT-ONLY - it does NOT fetch messages.
+Message fetching is delegated to the processor containers.
 
 One listener per creator, runs continuously.
 """
@@ -13,19 +17,15 @@ import asyncio
 import json
 import os
 import sys
-import redis.asyncio as aioredis
 from typing import Optional
 from modules.logger import setup_logger
 from modules.authentication import load_auth, create_api_helper
 from modules.cutoff_manager import CutoffManager
-from modules.incremental_fetcher import IncrementalFetcher
 from modules.redis_producer import RedisProducer
-from modules.message_fetcher import fetch_all_messages_fast
-from modules.bundle_processor import process_bundle_from_message
 
 
 class WebSocketListener:
-    """24/7 WebSocket listener for real-time message notifications."""
+    """24/7 WebSocket listener for real-time event detection (event-only, no fetching)."""
 
     def __init__(
         self,
@@ -53,7 +53,6 @@ class WebSocketListener:
         self.api = None
         self.authed = None
         self.cutoff_manager: Optional[CutoffManager] = None
-        self.incremental_fetcher: Optional[IncrementalFetcher] = None
         self.redis_producer: Optional[RedisProducer] = None
 
     async def initialize(self) -> bool:
@@ -67,26 +66,26 @@ class WebSocketListener:
             auth_details = load_auth(creator_id=self.creator_id)
             if not auth_details:
                 self.logger.error("=" * 70)
-                self.logger.error("✗ AUTHENTICATION FAILED: Unable to load credentials")
-                self.logger.error(f"✗ Creator ID: {self.creator_id}")
-                self.logger.error(f"✗ Creator Name: {self.creator_name}")
-                self.logger.error("✗ Check auth_multi.json for this creator")
+                self.logger.error("AUTHENTICATION FAILED: Unable to load credentials")
+                self.logger.error(f"Creator ID: {self.creator_id}")
+                self.logger.error(f"Creator Name: {self.creator_name}")
+                self.logger.error("Check auth_multi.json for this creator")
                 self.logger.error("=" * 70)
                 return False
 
             self.api, self.authed = await create_api_helper(auth_details, self.logger)
             if not self.authed:
                 self.logger.error("=" * 70)
-                self.logger.error("✗ AUTHENTICATION FAILED: Unable to authenticate with OnlyFans")
-                self.logger.error(f"✗ Creator: {self.creator_name} (ID: {self.creator_id})")
-                self.logger.error("✗ Possible causes:")
+                self.logger.error("AUTHENTICATION FAILED: Unable to authenticate with OnlyFans")
+                self.logger.error(f"Creator: {self.creator_name} (ID: {self.creator_id})")
+                self.logger.error("Possible causes:")
                 self.logger.error("  - Invalid cookie/x_bc token")
                 self.logger.error("  - Expired session")
                 self.logger.error("  - Account disabled/inactive in auth_multi.json")
                 self.logger.error("=" * 70)
                 return False
 
-            self.logger.info("✓ Authenticated with OnlyFans API")
+            self.logger.info("Authenticated with OnlyFans API")
 
             self.redis_producer = RedisProducer(
                 redis_host=self.redis_host,
@@ -94,23 +93,19 @@ class WebSocketListener:
                 redis_db=0
             )
             await self.redis_producer.connect()
-            self.logger.info("✓ Connected to Redis")
+            self.logger.info("Connected to Redis")
 
             self.cutoff_manager = CutoffManager(db_url=self.db_url, logger=self.logger)
             if not await self.cutoff_manager.initialize():
                 self.logger.error("Failed to initialize cutoff manager")
                 return False
+            self.logger.info("Cutoff manager initialized")
 
-            self.incremental_fetcher = IncrementalFetcher(
-                cutoff_manager=self.cutoff_manager,
-                logger=self.logger
-            )
-
-            self.logger.info("✓ All components initialized")
+            self.logger.info("All components initialized")
             return True
 
         except Exception as e:
-            self.logger.error(f"✗ Initialization failed: {str(e)}")
+            self.logger.error(f"Initialization failed: {str(e)}")
             import traceback
             traceback.print_exc()
             return False
@@ -121,30 +116,26 @@ class WebSocketListener:
         :param event: WebSocket event dictionary
         """
         try:
-            # Log raw event to understand structure
             self.logger.debug(f"Raw WebSocket event: {event}")
 
-            # Parse the data field which contains raw JSON string
-            import json
             raw_data = event.get('data')
             if raw_data and isinstance(raw_data, str):
                 try:
                     parsed_data = json.loads(raw_data)
-                    self.logger.info(f"✓ Parsed data keys: {parsed_data.keys() if isinstance(parsed_data, dict) else type(parsed_data)}")
+                    self.logger.debug(
+                        f"Parsed data keys: {parsed_data.keys() if isinstance(parsed_data, dict) else type(parsed_data)}"
+                    )
 
-                    # Log fromUser and toUser for api2_chat_message events
                     if isinstance(parsed_data, dict) and 'api2_chat_message' in parsed_data:
                         message_data = parsed_data['api2_chat_message']
                         from_user = message_data.get('fromUser', {})
                         to_user = message_data.get('toUser', {})
                         from_id = from_user.get('id') if isinstance(from_user, dict) else None
                         to_id = to_user.get('id') if isinstance(to_user, dict) else None
-                        self.logger.info(f"📧 fromUser.id={from_id}, toUser.id={to_id}")
+                        self.logger.info(f"fromUser.id={from_id}, toUser.id={to_id}")
 
-                    # Extract fan_id from OnlyFans WebSocket message format
                     fan_id = None
                     if isinstance(parsed_data, dict):
-                        # Check for api2_chat_message format
                         if 'api2_chat_message' in parsed_data:
                             message_data = parsed_data['api2_chat_message']
                             if isinstance(message_data, dict):
@@ -154,23 +145,18 @@ class WebSocketListener:
                                 from_user_id = str(from_user.get('id')) if isinstance(from_user, dict) and from_user.get('id') else None
                                 to_user_id = str(to_user.get('id')) if isinstance(to_user, dict) and to_user.get('id') else None
 
-                                # Determine which user is the fan (not the creator)
-                                # Case 1: fromUser has ID and it's not the creator = fan sent message
                                 if from_user_id and from_user_id != self.creator_id:
                                     fan_id = from_user_id
-                                    self.logger.info(f"✓ Message FROM fan {fan_id} (fan→creator)")
-                                # Case 2: fromUser is None/creator, toUser has ID = creator sent message to fan
+                                    self.logger.info(f"Message FROM fan {fan_id} (fan->creator)")
                                 elif to_user_id and to_user_id != self.creator_id:
                                     fan_id = to_user_id
-                                    self.logger.info(f"✓ Message TO fan {fan_id} (creator→fan)")
-                                # Case 3: Both are creator = ignore
+                                    self.logger.info(f"Message TO fan {fan_id} (creator->fan)")
                                 elif from_user_id == self.creator_id and to_user_id == self.creator_id:
-                                    self.logger.debug(f"Ignoring message from creator to creator (self)")
+                                    self.logger.debug("Ignoring message from creator to creator (self)")
                                     return
                                 else:
-                                    self.logger.debug(f"Ignoring non-message event")
+                                    self.logger.debug("Ignoring non-message event")
 
-                        # Fallback to other formats
                         if not fan_id:
                             fan_id = (parsed_data.get('from_user_id') or
                                      parsed_data.get('fromUserId') or
@@ -179,43 +165,40 @@ class WebSocketListener:
                                      parsed_data.get('userId'))
 
                             if fan_id and str(fan_id) == self.creator_id:
-                                # Try to get the other participant
                                 to_user_id = (parsed_data.get('to_user_id') or
                                              parsed_data.get('toUserId') or
                                              parsed_data.get('toUser', {}).get('id') if isinstance(parsed_data.get('toUser'), dict) else None)
                                 if to_user_id and str(to_user_id) != self.creator_id:
                                     fan_id = str(to_user_id)
-                                    self.logger.info(f"✓ Creator sent message to fan {fan_id}")
+                                    self.logger.info(f"Creator sent message to fan {fan_id}")
                                 else:
-                                    self.logger.debug(f"Ignoring creator self-message")
+                                    self.logger.debug("Ignoring creator self-message")
                                     return
 
                         if not fan_id:
-                            # Not a message event, ignore it
                             self.logger.debug(f"Ignoring non-message event with keys: {list(parsed_data.keys())[:20]}")
                 except json.JSONDecodeError as e:
                     self.logger.warning(f"Failed to parse WebSocket data: {str(e)}")
                     fan_id = None
             else:
-                # Fallback to old method
                 fan_id = str(event.get('from_user_id') or event.get('fromUser', {}).get('id') or '')
 
             if not fan_id or fan_id == 'None':
                 return
 
-            self.logger.info(f"📨 New message from fan {fan_id}")
+            self.logger.info(f"New message event for fan {fan_id}")
 
-            # Process this fan's messages in the background with Redis-based locking
-            # Pub/Sub publish happens AFTER messages are fetched and saved to Redis
-            asyncio.create_task(self._fetch_with_redis_lock(fan_id))
+            asyncio.create_task(self._route_fan_to_queue(fan_id))
 
         except Exception as e:
-            self.logger.error(f"✗ Error processing message event: {str(e)}")
+            self.logger.error(f"Error processing message event: {str(e)}")
             import traceback
             self.logger.error(traceback.format_exc())
 
-    async def _fetch_with_redis_lock(self, fan_id: str):
-        """Fetch messages with Redis-based distributed lock to prevent race conditions.
+    async def _route_fan_to_queue(self, fan_id: str):
+        """Route fan to appropriate queue based on database check.
+
+        Uses Redis lock to prevent duplicate queue pushes for same fan.
 
         :param fan_id: Fan's OnlyFans ID
         """
@@ -231,176 +214,51 @@ class WebSocketListener:
             )
 
             if not lock_acquired:
-                self.logger.debug(f"⏭️ Fan {fan_id} already being processed, skipping duplicate event")
+                self.logger.debug(f"Fan {fan_id} already being processed, skipping duplicate event")
                 return
 
-            self.logger.debug(f"🔒 Acquired processing lock for fan {fan_id}")
-            await self._fetch_and_process_messages(fan_id)
+            self.logger.debug(f"Acquired processing lock for fan {fan_id}")
+
+            cutoff_id = await self.cutoff_manager.get_cutoff_id(self.creator_id, fan_id)
+
+            if cutoff_id is None:
+                await self.redis_producer.redis.lpush(
+                    f"of:{self.creator_id}:new_fans_priority",
+                    fan_id
+                )
+                self.logger.info(f"NEW FAN {fan_id} -> new_fans_priority queue")
+            else:
+                await self.redis_producer.redis.lpush(
+                    f"of:{self.creator_id}:known_fans_queue",
+                    fan_id
+                )
+                self.logger.info(f"KNOWN FAN {fan_id} -> known_fans_queue")
 
         except Exception as e:
-            self.logger.error(f"✗ Error in Redis lock processing for fan {fan_id}: {str(e)}")
+            self.logger.error(f"Error routing fan {fan_id} to queue: {str(e)}")
             import traceback
             self.logger.error(traceback.format_exc())
         finally:
             try:
                 await self.redis_producer.redis.delete(lock_key)
-                self.logger.debug(f"🔓 Released processing lock for fan {fan_id}")
+                self.logger.debug(f"Released processing lock for fan {fan_id}")
             except Exception as e:
-                self.logger.debug(f"⚠️ Could not release lock for fan {fan_id}: {str(e)}")
-
-    async def _fetch_and_process_messages(self, fan_id: str):
-        """Fetch and process messages for a fan in the background.
-
-        :param fan_id: Fan's OnlyFans ID
-        """
-        try:
-            # Check if this is a new fan (not in database)
-            cutoff_id = await self.cutoff_manager.get_cutoff_id(self.creator_id, fan_id)
-
-            if cutoff_id is None:
-                # NEW FAN DETECTED - Route to priority queue for full history fetch
-                self.logger.info(f"🆕 NEW FAN DETECTED: {fan_id} - Adding to priority queue")
-
-                # Push to Redis priority queue (LPUSH = add to front)
-                await self.redis_producer.redis.lpush(
-                    f"of:{self.creator_id}:new_fans_priority",
-                    fan_id
-                )
-
-                self.logger.info(f"✓ Fan {fan_id} queued for priority processing (full history fetch)")
-                return  # Don't fetch here, let new_fan_processor handle it
-
-            # KNOWN FAN - Fetch only new messages (incremental)
-            self.logger.info(f"🔄 Fetching new messages for fan {fan_id} (cutoff_id={cutoff_id})")
-
-            user = await self.authed.get_user(fan_id)
-            if not user:
-                self.logger.warning(f"⚠️ Could not get user object for fan {fan_id}")
-                return
-
-            messages = await self.incremental_fetcher.fetch_new_messages(
-                user=user,
-                model_id=self.creator_id,
-                fan_id=fan_id,
-                authed=self.authed,
-                limit=20
-            )
-
-            if not messages:
-                self.logger.debug(f"No new messages fetched for fan {fan_id}")
-                return
-
-            from datetime import datetime
-            from modules.bundle_processor import is_bundle
-
-            fetched_at = datetime.now()
-            bundle_row_id = 1
-
-            bundles_dict = {}
-            bundle_items_list = []
-            fan_interactions_list = []
-
-            for message in messages:
-                # FastMessageFetcher returns raw dicts from API
-                from_user = message.get('fromUser', {}) or {}
-                author_id = str(from_user.get('id', ''))
-                author_username = from_user.get('username', '')
-                is_from_creator = (author_id == self.creator_id)
-
-                media_id = ''
-                media_type = ''
-                media_list = message.get('media', []) or []
-                if media_list and len(media_list) > 0:
-                    first_media = media_list[0]
-                    media_id = str(first_media.get('id', ''))
-                    media_type = first_media.get('type', '').lower()
-
-                message_dict = {
-                    'message_id': str(message.get('id', '')),
-                    'model_id': self.creator_id,
-                    'fan_id': fan_id,
-                    'sender_id': author_id,
-                    'model_name': self.creator_name,
-                    'sender_username': author_username,
-                    'message': message.get('text') or '',
-                    'message_type': 'bundle' if is_bundle(message) else ('media' if media_id else 'text'),
-                    'media_id': media_id,
-                    'media_type': media_type,
-                    'price': float(message.get('price', 0) or 0),
-                    'is_free': message.get('isFree', True),
-                    'is_purchased': message.get('canPurchase') is False,
-                    'is_from_me': is_from_creator,
-                    'created_at': message.get('createdAt'),
-                    'fetched_at': fetched_at.isoformat()
-                }
-
-                await self.redis_producer.push_message(self.creator_id, message_dict)
-
-                if is_bundle(message):
-                    bundle_data, bundle_items, fan_interaction = process_bundle_from_message(
-                        message, self.creator_id, self.creator_name, fan_id, bundle_row_id, fetched_at
-                    )
-
-                    if bundle_data:
-                        bundle_id = bundle_data['bundle_id']
-                        if bundle_id not in bundles_dict:
-                            bundles_dict[bundle_id] = bundle_data
-
-                        bundle_items_list.extend(bundle_items)
-                        if fan_interaction:
-                            fan_interactions_list.append(fan_interaction)
-
-                        bundle_row_id += 1
-
-            for bundle in bundles_dict.values():
-                await self.redis_producer.push_bundle(self.creator_id, bundle)
-
-            if bundle_items_list:
-                await self.redis_producer.push_bundle_items(self.creator_id, bundle_items_list)
-
-            if fan_interactions_list:
-                await self.redis_producer.push_fan_interactions(self.creator_id, fan_interactions_list)
-
-            self.logger.info(f"✓ Processed {len(messages)} new message(s) from fan {fan_id}")
-
-            # Publish to Pub/Sub AFTER messages are saved to Redis
-            # This ensures external consumers can query the data
-            if messages:
-                latest_msg = messages[0]  # Most recent message (list is newest-first)
-                msg_text = latest_msg.get('text', '') or ''
-                msg_created_at = latest_msg.get('createdAt', '') or ''
-
-                try:
-                    await self.redis_producer.publish_to_pubsub(
-                        creator_id=self.creator_id,
-                        creator_name=self.creator_name,
-                        fan_id=fan_id,
-                        message=msg_text,
-                        created_at=msg_created_at
-                    )
-                    self.logger.info(f"📤 Published to Pub/Sub for fan {fan_id}")
-                except Exception as pubsub_err:
-                    self.logger.warning(f"⚠️ Failed to publish to Pub/Sub: {str(pubsub_err)}")
-
-        except Exception as e:
-            self.logger.error(f"✗ Error fetching/processing messages for fan {fan_id}: {str(e)}")
-            import traceback
-            self.logger.error(traceback.format_exc())
+                self.logger.debug(f"Could not release lock for fan {fan_id}: {str(e)}")
 
     async def listen(self):
         """Start WebSocket listener (24/7 operation)."""
         self.logger.info("=" * 70)
-        self.logger.info(f"WEBSOCKET LISTENER - {self.creator_name}")
+        self.logger.info(f"WEBSOCKET LISTENER (EVENT-ONLY) - {self.creator_name}")
         self.logger.info("=" * 70)
 
         try:
             await self.authed.listen()
-            self.logger.info("✓ WebSocket connection started")
+            self.logger.info("WebSocket connection started")
 
             event_queue = self.authed.subscribe(max_queue_size=1000)
-            self.logger.info("✓ Subscribed to event queue (max 1000 events)")
+            self.logger.info("Subscribed to event queue (max 1000 events)")
 
-            self.logger.info("🎧 Listening for real-time events...")
+            self.logger.info("Listening for real-time events...")
 
             while True:
                 try:
@@ -417,9 +275,9 @@ class WebSocketListener:
                     continue
 
         except KeyboardInterrupt:
-            self.logger.info("\n⚠️ Interrupted by user")
+            self.logger.info("\nInterrupted by user")
         except Exception as e:
-            self.logger.error(f"✗ WebSocket listener error: {str(e)}")
+            self.logger.error(f"WebSocket listener error: {str(e)}")
             import traceback
             traceback.print_exc()
         finally:
@@ -432,26 +290,27 @@ class WebSocketListener:
         if self.cutoff_manager:
             try:
                 await self.cutoff_manager.close()
+                self.logger.info("Cutoff manager closed")
             except Exception as e:
-                self.logger.warning(f"⚠️ Error closing cutoff manager: {str(e)}")
+                self.logger.warning(f"Error closing cutoff manager: {str(e)}")
 
         if self.redis_producer:
             try:
                 await self.redis_producer.close()
-                self.logger.info("✓ Redis connection closed")
+                self.logger.info("Redis connection closed")
             except Exception as e:
-                self.logger.warning(f"⚠️ Error closing Redis: {str(e)}")
+                self.logger.warning(f"Error closing Redis: {str(e)}")
 
         if self.api and hasattr(self.api, 'close_pool'):
             try:
                 await self.api.close_pool()
-                self.logger.info("✓ API session closed")
+                self.logger.info("API session closed")
             except Exception as e:
-                self.logger.warning(f"⚠️ Error closing API: {str(e)}")
+                self.logger.warning(f"Error closing API: {str(e)}")
 
         import gc
         gc.collect()
-        self.logger.info("✓ Cleanup completed")
+        self.logger.info("Cleanup completed")
 
 
 async def main():
@@ -463,11 +322,11 @@ async def main():
     redis_port = int(os.getenv('REDIS_PORT', '6385'))
 
     if not creator_id:
-        print("✗ CREATOR_ID environment variable not set")
+        print("CREATOR_ID environment variable not set")
         sys.exit(1)
 
     if not db_url:
-        print("✗ DATABASE_URL environment variable not set")
+        print("DATABASE_URL environment variable not set")
         sys.exit(1)
 
     listener = WebSocketListener(
@@ -480,9 +339,9 @@ async def main():
 
     if not await listener.initialize():
         print("=" * 70)
-        print("✗ FATAL: Failed to initialize WebSocket listener")
-        print("✗ Authentication or component initialization failed")
-        print("✗ Container will exit now")
+        print("FATAL: Failed to initialize WebSocket listener")
+        print("Authentication or component initialization failed")
+        print("Container will exit now")
         print("=" * 70)
         sys.exit(1)
 

@@ -180,6 +180,8 @@ class FanSync:
         :param fan_id: New fan's OnlyFans ID
         :return: True if successful, False otherwise
         """
+        self.checkpoint.mark_in_progress(fan_id)
+
         try:
             self.logger.info(f"Processing new fan: {fan_id}")
 
@@ -197,6 +199,7 @@ class FanSync:
 
             if not messages:
                 self.logger.info(f"No messages found for new fan {fan_id}")
+                self.checkpoint.mark_completed(fan_id)
                 return True
 
             from datetime import datetime
@@ -295,6 +298,7 @@ class FanSync:
                 await self.redis_producer.push_fan_interactions(self.creator_id, fan_interactions_list)
 
             self.logger.info(f"✓ Processed {len(messages)} messages for new fan {fan_id}")
+            self.checkpoint.mark_completed(fan_id)
             return True
 
         except Exception as e:

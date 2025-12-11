@@ -1,63 +1,70 @@
-"""New Fan Processor - Priority Queue for New Subscriber Full History Fetch.
+"""Known Fan Processor - Queue Consumer for Incremental Message Fetching.
 
-Continuously monitors Redis priority queue for new fans detected by WebSocket listeners.
+Continuously monitors Redis queue for known fans detected by WebSocket listeners.
 Processes multiple fans in PARALLEL for maximum throughput.
 
-When a new fan is detected:
-1. Pop from Redis priority queue (non-blocking RPOP in batch)
-2. Check checkpoint to avoid duplicates
-3. Fetch FULL message history (cutoff_id=None)
+When a known fan event is received:
+1. Pop from Redis queue (non-blocking RPOP in batch)
+2. Get cutoff_id from database (last known message_id)
+3. Fetch ONLY new messages using incremental fetcher
 4. Push to Redis for db_worker to save
-5. Mark as completed in checkpoint
+5. Publish to Pub/Sub for external consumers
 
 One processor per creator, runs 24/7 alongside WebSocket listeners.
 """
 
 import asyncio
-import json
 import os
 import sys
+from datetime import datetime
 from typing import Optional
 import redis.asyncio as aioredis
 from modules.logger import setup_logger
 from modules.authentication import load_auth, create_api_helper
-from modules.checkpoint import CheckpointManager
-from modules.message_fetcher import fetch_all_messages_fast
+from modules.cutoff_manager import CutoffManager
+from modules.incremental_fetcher import IncrementalFetcher
 from modules.bundle_processor import process_bundle_from_message, is_bundle
 from modules.redis_producer import RedisProducer
 
 
-class NewFanProcessor:
-    """Priority queue processor for new fans requiring full message history fetch."""
+class KnownFanProcessor:
+    """Queue processor for known fans requiring incremental message fetch."""
 
     def __init__(
         self,
         creator_id: str,
         creator_name: str,
+        db_url: str,
         redis_host: str = 'redis',
         redis_port: int = 6385,
         concurrent_fans: int = 3
     ):
-        """Initialize new fan processor.
+        """Initialize known fan processor.
 
         :param creator_id: Creator's OnlyFans ID
         :param creator_name: Creator's display name
+        :param db_url: PostgreSQL connection string
         :param redis_host: Redis hostname
         :param redis_port: Redis port
         :param concurrent_fans: Number of fans to process in parallel
         """
         self.creator_id = str(creator_id)
         self.creator_name = creator_name
+        self.db_url = db_url
         self.redis_host = redis_host
         self.redis_port = redis_port
         self.concurrent_fans = concurrent_fans
 
-        self.logger = setup_logger(f'new_fan_processor_{creator_name}', log_type='new_fan_processor')
+        self.logger = setup_logger(
+            f'known_fan_processor_{creator_name}',
+            log_type='known_fan_processor'
+        )
         self.api = None
         self.authed = None
         self.redis_client: Optional[aioredis.Redis] = None
         self.redis_producer: Optional[RedisProducer] = None
-        self.checkpoint: Optional[CheckpointManager] = None
+        self.cutoff_manager: Optional[CutoffManager] = None
+        self.incremental_fetcher: Optional[IncrementalFetcher] = None
         self.semaphore: Optional[asyncio.Semaphore] = None
         self.active_tasks: set = set()
 
@@ -67,31 +74,31 @@ class NewFanProcessor:
         :return: True if successful, False otherwise
         """
         try:
-            self.logger.info(f"Initializing new fan processor for {self.creator_name}...")
+            self.logger.info(f"Initializing known fan processor for {self.creator_name}...")
 
             auth_details = load_auth(creator_id=self.creator_id)
             if not auth_details:
                 self.logger.error("=" * 70)
-                self.logger.error("✗ AUTHENTICATION FAILED: Unable to load credentials")
-                self.logger.error(f"✗ Creator ID: {self.creator_id}")
-                self.logger.error(f"✗ Creator Name: {self.creator_name}")
-                self.logger.error("✗ Check auth_multi.json for this creator")
+                self.logger.error("AUTHENTICATION FAILED: Unable to load credentials")
+                self.logger.error(f"Creator ID: {self.creator_id}")
+                self.logger.error(f"Creator Name: {self.creator_name}")
+                self.logger.error("Check auth_multi.json for this creator")
                 self.logger.error("=" * 70)
                 return False
 
             self.api, self.authed = await create_api_helper(auth_details, self.logger)
             if not self.authed:
                 self.logger.error("=" * 70)
-                self.logger.error("✗ AUTHENTICATION FAILED: Unable to authenticate with OnlyFans")
-                self.logger.error(f"✗ Creator: {self.creator_name} (ID: {self.creator_id})")
-                self.logger.error("✗ Possible causes:")
+                self.logger.error("AUTHENTICATION FAILED: Unable to authenticate with OnlyFans")
+                self.logger.error(f"Creator: {self.creator_name} (ID: {self.creator_id})")
+                self.logger.error("Possible causes:")
                 self.logger.error("  - Invalid cookie/x_bc token")
                 self.logger.error("  - Expired session")
                 self.logger.error("  - Account disabled/inactive in auth_multi.json")
                 self.logger.error("=" * 70)
                 return False
 
-            self.logger.info("✓ Authenticated with OnlyFans API")
+            self.logger.info("Authenticated with OnlyFans API")
 
             self.redis_client = aioredis.Redis(
                 host=self.redis_host,
@@ -100,7 +107,7 @@ class NewFanProcessor:
                 decode_responses=False
             )
             await self.redis_client.ping()
-            self.logger.info("✓ Connected to Redis")
+            self.logger.info("Connected to Redis")
 
             self.redis_producer = RedisProducer(
                 redis_host=self.redis_host,
@@ -108,10 +115,19 @@ class NewFanProcessor:
                 redis_db=0
             )
             await self.redis_producer.connect()
-            self.logger.info("✓ Redis producer initialized")
+            self.logger.info("Redis producer initialized")
 
-            self.checkpoint = CheckpointManager(self.creator_name)
-            self.logger.info("Checkpoint manager initialized")
+            self.cutoff_manager = CutoffManager(db_url=self.db_url, logger=self.logger)
+            if not await self.cutoff_manager.initialize():
+                self.logger.error("Failed to initialize cutoff manager")
+                return False
+            self.logger.info("Cutoff manager initialized")
+
+            self.incremental_fetcher = IncrementalFetcher(
+                cutoff_manager=self.cutoff_manager,
+                logger=self.logger
+            )
+            self.logger.info("Incremental fetcher initialized")
 
             self.semaphore = asyncio.Semaphore(self.concurrent_fans)
             self.logger.info(f"Parallel processing enabled: {self.concurrent_fans} concurrent fans")
@@ -120,58 +136,44 @@ class NewFanProcessor:
             return True
 
         except Exception as e:
-            self.logger.error(f"✗ Initialization failed: {str(e)}")
+            self.logger.error(f"Initialization failed: {str(e)}")
             import traceback
             traceback.print_exc()
             return False
 
-    async def process_priority_fan(self, fan_id: str) -> bool:
-        """Fetch and save complete message history for a new fan.
+    async def process_known_fan(self, fan_id: str) -> bool:
+        """Fetch and save new messages for a known fan.
 
-        :param fan_id: New fan's OnlyFans ID
+        :param fan_id: Known fan's OnlyFans ID
         :return: True if successful, False otherwise
         """
         try:
             self.logger.info("=" * 70)
-            self.logger.info(f"🔥 PRIORITY FAN PROCESSING: {fan_id}")
+            self.logger.info(f"KNOWN FAN PROCESSING: {fan_id}")
             self.logger.info("=" * 70)
 
-            # Check if already processed (avoid duplicates)
-            if self.checkpoint.is_completed(fan_id):
-                self.logger.info(f"✓ Fan {fan_id} already processed, skipping")
-                return True
-
-            # Mark as in-progress in checkpoint
-            self.checkpoint.mark_in_progress(fan_id)
-            self.logger.info(f"✓ Marked fan {fan_id} as in-progress")
-
-            # Get user object
             user = await self.authed.get_user(fan_id)
             if not user:
-                self.logger.warning(f"⚠️ Could not get user object for fan {fan_id}")
-                self.checkpoint.mark_in_progress(fan_id, remove=True)  # Remove from in-progress
+                self.logger.warning(f"Could not get user object for fan {fan_id}")
                 return False
 
-            self.logger.info(f"📥 Fetching FULL message history for fan {fan_id} (@{user.username})...")
+            self.logger.info(
+                f"Fetching new messages for fan {fan_id} (@{user.username})..."
+            )
 
-            # Fetch FULL message history (cutoff_id=None)
-            messages = await fetch_all_messages_fast(
+            messages = await self.incremental_fetcher.fetch_new_messages(
                 user=user,
+                model_id=self.creator_id,
+                fan_id=fan_id,
                 authed=self.authed,
-                cutoff_id=None,  # FULL fetch from beginning
-                logger=self.logger
+                limit=20
             )
 
             if not messages:
-                self.logger.info(f"No messages found for new fan {fan_id}")
-                # Still mark as completed to avoid re-processing
-                self.checkpoint.mark_completed(fan_id)
+                self.logger.debug(f"No new messages for fan {fan_id}")
                 return True
 
-            self.logger.info(f"✓ Fetched {len(messages)} messages for fan {fan_id}")
-
-            # Process messages and bundles (same logic as fan_sync.py)
-            from datetime import datetime
+            self.logger.info(f"Fetched {len(messages)} new message(s) for fan {fan_id}")
 
             fetched_at = datetime.now()
             bundle_row_id = 1
@@ -180,7 +182,6 @@ class NewFanProcessor:
             fan_interactions_list = []
 
             for message in messages:
-                # Handle both dict and object formats
                 if isinstance(message, dict):
                     from_user = message.get("fromUser", {}) or {}
                     author_id = str(from_user.get("id", ""))
@@ -241,7 +242,9 @@ class NewFanProcessor:
                 try:
                     await self.redis_producer.push_message(self.creator_id, message_dict)
                 except Exception as push_error:
-                    self.logger.error(f"✗ Failed to push message {message_dict.get('message_id')} for fan {fan_id}")
+                    self.logger.error(
+                        f"Failed to push message {message_dict.get('message_id')} for fan {fan_id}"
+                    )
                     self.logger.error(f"  Error: {str(push_error)}")
                     self.logger.error(f"  Redis key: of:{self.creator_id}:messages")
                     import traceback
@@ -261,7 +264,6 @@ class NewFanProcessor:
                             fan_interactions_list.append(fan_interaction)
                         bundle_row_id += 1
 
-            # Push bundles, items, and interactions
             for bundle in bundles_dict.values():
                 await self.redis_producer.push_bundle(self.creator_id, bundle)
             if bundle_items_list:
@@ -269,29 +271,36 @@ class NewFanProcessor:
             if fan_interactions_list:
                 await self.redis_producer.push_fan_interactions(self.creator_id, fan_interactions_list)
 
-            # Mark as completed in checkpoint
-            self.checkpoint.mark_completed(fan_id)
-
             self.logger.info("=" * 70)
-            self.logger.info(f"✅ PRIORITY FAN COMPLETED: {fan_id}")
+            self.logger.info(f"KNOWN FAN COMPLETED: {fan_id}")
             self.logger.info(f"   Messages processed: {len(messages)}")
             self.logger.info(f"   Bundles: {len(bundles_dict)}")
             self.logger.info(f"   Bundle items: {len(bundle_items_list)}")
             self.logger.info("=" * 70)
 
+            if messages:
+                latest_msg = messages[0]
+                msg_text = latest_msg.get('text', '') or ''
+                msg_created_at = latest_msg.get('createdAt', '') or ''
+
+                try:
+                    await self.redis_producer.publish_to_pubsub(
+                        creator_id=self.creator_id,
+                        creator_name=self.creator_name,
+                        fan_id=fan_id,
+                        message=msg_text,
+                        created_at=msg_created_at
+                    )
+                    self.logger.info(f"Published to Pub/Sub for fan {fan_id}")
+                except Exception as pubsub_err:
+                    self.logger.warning(f"Failed to publish to Pub/Sub: {str(pubsub_err)}")
+
             return True
 
         except Exception as e:
-            self.logger.error(f"✗ Error processing priority fan {fan_id}: {str(e)}")
+            self.logger.error(f"Error processing known fan {fan_id}: {str(e)}")
             import traceback
             self.logger.error(f"Traceback:\n{traceback.format_exc()}")
-
-            # Remove from in-progress to allow retry
-            try:
-                self.checkpoint.mark_in_progress(fan_id, remove=True)
-            except:
-                pass
-
             return False
 
     async def _process_fan_with_semaphore(self, fan_id: str):
@@ -301,23 +310,23 @@ class NewFanProcessor:
         """
         async with self.semaphore:
             try:
-                success = await self.process_priority_fan(fan_id)
+                success = await self.process_known_fan(fan_id)
                 if success:
-                    self.logger.info(f"Successfully processed priority fan {fan_id}")
+                    self.logger.info(f"Successfully processed known fan {fan_id}")
                 else:
-                    self.logger.warning(f"Failed to process priority fan {fan_id}")
+                    self.logger.warning(f"Failed to process known fan {fan_id}")
             except Exception as e:
                 self.logger.error(f"Error processing fan {fan_id}: {str(e)}")
 
     async def run(self):
-        """Run new fan processor with parallel Redis queue monitoring."""
+        """Run known fan processor with parallel Redis queue monitoring."""
         self.logger.info("=" * 70)
-        self.logger.info(f"NEW FAN PROCESSOR (PARALLEL) - {self.creator_name}")
-        self.logger.info(f"Priority Queue: of:{self.creator_id}:new_fans_priority")
+        self.logger.info(f"KNOWN FAN PROCESSOR (PARALLEL) - {self.creator_name}")
+        self.logger.info(f"Queue: of:{self.creator_id}:known_fans_queue")
         self.logger.info(f"Concurrent fans: {self.concurrent_fans}")
         self.logger.info("=" * 70)
 
-        queue_key = f"of:{self.creator_id}:new_fans_priority"
+        queue_key = f"of:{self.creator_id}:known_fans_queue"
 
         try:
             while True:
@@ -341,7 +350,7 @@ class NewFanProcessor:
 
                         if fans_to_process:
                             self.logger.info(
-                                f"Popped {len(fans_to_process)} new fan(s) from queue, "
+                                f"Popped {len(fans_to_process)} fan(s) from queue, "
                                 f"active tasks: {len(self.active_tasks)}"
                             )
 
@@ -394,36 +403,44 @@ class NewFanProcessor:
         """Cleanup all resources."""
         self.logger.info("Cleaning up resources...")
 
+        if self.cutoff_manager:
+            try:
+                await self.cutoff_manager.close()
+                self.logger.info("Cutoff manager closed")
+            except Exception as e:
+                self.logger.warning(f"Error closing cutoff manager: {str(e)}")
+
         if self.redis_client:
             try:
                 await self.redis_client.close()
-                self.logger.info("✓ Redis client closed")
+                self.logger.info("Redis client closed")
             except Exception as e:
-                self.logger.warning(f"⚠️ Error closing Redis client: {str(e)}")
+                self.logger.warning(f"Error closing Redis client: {str(e)}")
 
         if self.redis_producer:
             try:
                 await self.redis_producer.close()
-                self.logger.info("✓ Redis producer closed")
+                self.logger.info("Redis producer closed")
             except Exception as e:
-                self.logger.warning(f"⚠️ Error closing Redis producer: {str(e)}")
+                self.logger.warning(f"Error closing Redis producer: {str(e)}")
 
         if self.api and hasattr(self.api, 'close_pool'):
             try:
                 await self.api.close_pool()
-                self.logger.info("✓ API session closed")
+                self.logger.info("API session closed")
             except Exception as e:
-                self.logger.warning(f"⚠️ Error closing API: {str(e)}")
+                self.logger.warning(f"Error closing API: {str(e)}")
 
         import gc
         gc.collect()
-        self.logger.info("✓ Cleanup completed")
+        self.logger.info("Cleanup completed")
 
 
 async def main():
-    """Main entry point for new fan processor."""
+    """Main entry point for known fan processor."""
     creator_id = os.getenv('CREATOR_ID')
     creator_name = os.getenv('CREATOR_NAME', creator_id)
+    db_url = os.getenv('DATABASE_URL')
     redis_host = os.getenv('REDIS_HOST', 'redis')
     redis_port = int(os.getenv('REDIS_PORT', '6385'))
     concurrent_fans = int(os.getenv('CONCURRENT_FANS', '3'))
@@ -432,9 +449,14 @@ async def main():
         print("CREATOR_ID environment variable not set")
         sys.exit(1)
 
-    processor = NewFanProcessor(
+    if not db_url:
+        print("DATABASE_URL environment variable not set")
+        sys.exit(1)
+
+    processor = KnownFanProcessor(
         creator_id=creator_id,
         creator_name=creator_name,
+        db_url=db_url,
         redis_host=redis_host,
         redis_port=redis_port,
         concurrent_fans=concurrent_fans
@@ -442,9 +464,9 @@ async def main():
 
     if not await processor.initialize():
         print("=" * 70)
-        print("✗ FATAL: Failed to initialize new fan processor")
-        print("✗ Authentication or component initialization failed")
-        print("✗ Container will exit now")
+        print("FATAL: Failed to initialize known fan processor")
+        print("Authentication or component initialization failed")
+        print("Container will exit now")
         print("=" * 70)
         sys.exit(1)
 
