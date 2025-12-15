@@ -2,6 +2,7 @@
 
 Handles loading credentials from database (primary) or auth_multi.json (fallback).
 Database credentials are encrypted using Fernet encryption.
+Supports GoLogin integration for fresh credentials and proxy routing.
 """
 
 import asyncio
@@ -9,12 +10,14 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Optional, List
-from ultima_scraper_api import OnlyFansAPI
+from typing import Optional, List, Tuple
+from ultima_scraper_api import OnlyFansAPI, select_api
 from ultima_scraper_api.apis.onlyfans.classes.extras import AuthDetails
 from ultima_scraper_api.apis.onlyfans.authenticator import OnlyFansAuthenticator
+from ultima_scraper_api.config import UltimaScraperAPIConfig
 
 from modules.db_credential_loader import load_credentials_from_db
+from modules.gologin_manager import GoLoginManager
 
 logger = logging.getLogger(__name__)
 
@@ -335,28 +338,125 @@ def load_auth(creator_id: str, auth_file: str = "auth_multi.json") -> Optional[A
         return asyncio.run(load_auth_async(creator_id, auth_file))
 
 
-async def create_api_helper(auth_details: AuthDetails, logger):
-    """Create OnlyFans API and authenticate.
+async def create_api_helper(
+    auth_details: AuthDetails,
+    logger,
+    gologin_profile_id: Optional[str] = None,
+    use_gologin: Optional[bool] = None,
+    use_gologin_credentials: bool = False
+) -> Tuple[Optional[OnlyFansAPI], Optional[object]]:
+    """Create OnlyFans API and authenticate, optionally using GoLogin for proxy.
 
-    :param auth_details: AuthDetails object with credentials
-    :param logger: Logger instance
-    :return: Tuple of (api, authed) or (None, None) if failed
+    By default, only uses GoLogin for proxy routing while keeping database credentials.
+    Set use_gologin_credentials=True to also override cookies/x_bc from GoLogin.
+
+    :param auth_details: AuthDetails object with credentials.
+    :param logger: Logger instance.
+    :param gologin_profile_id: Optional GoLogin profile ID for proxy routing.
+    :param use_gologin: If True, uses GoLogin for proxy. If None, auto-detects from gologin_profile_id.
+    :param use_gologin_credentials: If True, also use GoLogin cookies/x_bc (default: False, use DB credentials).
+    :return: Tuple of (api, authed) or (None, None) if failed.
     """
+    # Determine if we should use GoLogin
+    if use_gologin is None:
+        use_gologin = bool(gologin_profile_id) and bool(os.getenv("GOLOGIN_API_TOKEN"))
+
     try:
-        api = OnlyFansAPI()
+        proxy_url = None
+
+        # If GoLogin is enabled, get proxy (and optionally credentials)
+        if use_gologin and gologin_profile_id:
+            logger.info(f"Using GoLogin profile {gologin_profile_id} for {auth_details.username}")
+
+            try:
+                gologin_manager = GoLoginManager()
+                profile_data = await gologin_manager.get_profile(gologin_profile_id)
+
+                if profile_data:
+                    # Always get proxy from GoLogin
+                    proxy_url = gologin_manager._extract_proxy_url(profile_data)
+                    if proxy_url:
+                        # Mask password in log
+                        masked = proxy_url.split('@')[-1] if '@' in proxy_url else proxy_url
+                        logger.info(f"  Proxy: {masked}")
+                    else:
+                        logger.warning(f"  No proxy configured in GoLogin profile")
+
+                    # Only override credentials if explicitly requested
+                    if use_gologin_credentials:
+                        logger.info(f"  Using GoLogin credentials (use_gologin_credentials=True)")
+                        fresh_creds = await gologin_manager.get_fresh_credentials(gologin_profile_id)
+                        if fresh_creds:
+                            if fresh_creds.get("cookies"):
+                                auth_details.cookie = fresh_creds["cookies"]
+                                logger.debug(f"  Overriding cookies from GoLogin")
+                            if fresh_creds.get("x_bc"):
+                                auth_details.x_bc = fresh_creds["x_bc"]
+                                logger.debug(f"  Overriding x_bc from GoLogin")
+                            if fresh_creds.get("user_agent"):
+                                auth_details.user_agent = fresh_creds["user_agent"]
+                                logger.debug(f"  Overriding user_agent from GoLogin")
+                    else:
+                        logger.info(f"  Using database credentials (proxy-only mode)")
+                else:
+                    logger.warning(f"  Could not get GoLogin profile, proceeding without proxy")
+
+                await gologin_manager.close()
+
+            except Exception as e:
+                logger.warning(f"  GoLogin error: {str(e)}, proceeding without proxy")
+
+        # Create API with optional proxy configuration
+        if proxy_url:
+            config = UltimaScraperAPIConfig()
+            config.settings.network.proxies = [proxy_url]
+            api = select_api("onlyfans", config=config)
+            logger.info(f"  API configured with proxy routing")
+        else:
+            api = OnlyFansAPI()
+            if use_gologin and gologin_profile_id:
+                logger.warning(f"  API created WITHOUT proxy (GoLogin proxy not available)")
+
+        # Authenticate
         authenticator = OnlyFansAuthenticator(api, auth_details)
         authed = await authenticator.login()
 
         if not authed or not authenticator.is_authed():
-            logger.error(f"✗ Authentication failed for: {auth_details.username}")
+            logger.error(f"Authentication failed for: {auth_details.username}")
             if authenticator.errors:
                 for error in authenticator.errors:
                     logger.error(f"  Error: {error.message}")
             return None, None
 
-        logger.info(f"✓ Successfully authenticated: {auth_details.username or authed.user.username}")
+        logger.info(f"Successfully authenticated: {auth_details.username or authed.user.username}")
         return api, authed
 
     except Exception as e:
-        logger.error(f"✗ Exception during authentication: {str(e)}")
+        logger.error(f"Exception during authentication: {str(e)}")
         return None, None
+
+
+async def create_api_with_gologin(
+    auth_details: AuthDetails,
+    gologin_profile_id: str,
+    logger,
+    use_gologin_credentials: bool = False
+) -> Tuple[Optional[OnlyFansAPI], Optional[object]]:
+    """Create OnlyFans API with GoLogin integration (convenience function).
+
+    This is a shortcut for create_api_helper with GoLogin always enabled.
+    By default only uses GoLogin proxy, keeping database credentials.
+
+    :param auth_details: AuthDetails object with credentials.
+    :param gologin_profile_id: GoLogin profile ID (required).
+    :param logger: Logger instance.
+    :param use_gologin_credentials: If True, also use GoLogin cookies/x_bc (default: False).
+    :return: Tuple of (api, authed) or (None, None) if failed.
+    """
+    return await create_api_helper(
+        auth_details=auth_details,
+        logger=logger,
+        gologin_profile_id=gologin_profile_id,
+        use_gologin=True,
+        use_gologin_credentials=use_gologin_credentials
+    )
