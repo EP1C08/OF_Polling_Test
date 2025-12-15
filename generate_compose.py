@@ -137,7 +137,7 @@ def generate_docker_compose(
         compose_dict['services'][producer_service] = {
             'build': {
                 'context': '.',
-                'dockerfile': 'Dockerfile.test-producer' if is_test else 'Dockerfile.producer'
+                'dockerfile': 'Dockerfile.producer'
             },
             'container_name': f'{container_prefix}-producer-{creator_name}',
             'environment': [
@@ -145,7 +145,10 @@ def generate_docker_compose(
                 f'CREATOR_NAME={creator["name"]}',
                 f'REDIS_HOST={redis_name}',
                 f'REDIS_PORT={redis_internal_port}',
-                'AUTH_FILE=/app/auth_multi.json'
+                'AUTH_FILE=/app/auth_multi.json',
+                'DATABASE_URL=${DATABASE_URL}',
+                'ENCRYPTION_KEY=${ENCRYPTION_KEY}',
+                'GOLOGIN_API_TOKEN=${GOLOGIN_API_TOKEN}'
             ],
             'volumes': [
                 './auth_multi.json:/app/auth_multi.json:ro',
@@ -173,7 +176,7 @@ def generate_docker_compose(
             compose_dict['services'][producer_service]['environment'].extend([
                 'TEST_LIMIT=5',         # Only process 5 fans per creator
                 'MESSAGE_LIMIT=10',
-                'CONCURRENT_FANS=3',    # 3 fans at once
+                'CONCURRENT_FANS=10',   # 10 fans at once
                 'FAN_DELAY=5',          # 5s between batches
                 'FETCH_TIMEOUT=600',    # 10 minute timeout
                 'REAUTH_INTERVAL=100'   # Reauth every 100 fans
@@ -181,7 +184,7 @@ def generate_docker_compose(
         else:
             # Production mode - add concurrent processing configuration
             compose_dict['services'][producer_service]['environment'].extend([
-                'CONCURRENT_FANS=3',    # 3 fans at once
+                'CONCURRENT_FANS=10',   # 10 fans at once
                 'FAN_DELAY=5',          # 5s between batches
                 'FETCH_TIMEOUT=600',    # 10 minute timeout
                 'REAUTH_INTERVAL=100'   # Reauthenticate every 100 fans
@@ -199,6 +202,8 @@ def generate_docker_compose(
                 f'CREATOR_ID={creator_id}',
                 f'CREATOR_NAME={creator["name"]}',
                 'DATABASE_URL=${DATABASE_URL}',
+                'ENCRYPTION_KEY=${ENCRYPTION_KEY}',
+                'GOLOGIN_API_TOKEN=${GOLOGIN_API_TOKEN}',
                 f'REDIS_HOST={redis_name}',
                 f'REDIS_PORT={redis_internal_port}'
             ],
@@ -233,6 +238,8 @@ def generate_docker_compose(
                 f'CREATOR_ID={creator_id}',
                 f'CREATOR_NAME={creator["name"]}',
                 'DATABASE_URL=${DATABASE_URL}',
+                'ENCRYPTION_KEY=${ENCRYPTION_KEY}',
+                'GOLOGIN_API_TOKEN=${GOLOGIN_API_TOKEN}',
                 f'REDIS_HOST={redis_name}',
                 f'REDIS_PORT={redis_internal_port}',
                 'SYNC_INTERVAL=14400'  # 4 hours
@@ -268,9 +275,12 @@ def generate_docker_compose(
             'environment': [
                 f'CREATOR_ID={creator_id}',
                 f'CREATOR_NAME={creator["name"]}',
+                'DATABASE_URL=${DATABASE_URL}',
+                'ENCRYPTION_KEY=${ENCRYPTION_KEY}',
+                'GOLOGIN_API_TOKEN=${GOLOGIN_API_TOKEN}',
                 f'REDIS_HOST={redis_name}',
                 f'REDIS_PORT={redis_internal_port}',
-                'CONCURRENT_FANS=3'
+                'CONCURRENT_FANS=10'
             ],
             'volumes': [
                 './auth_multi.json:/app/auth_multi.json:ro',
@@ -304,9 +314,11 @@ def generate_docker_compose(
                 f'CREATOR_ID={creator_id}',
                 f'CREATOR_NAME={creator["name"]}',
                 'DATABASE_URL=${DATABASE_URL}',
+                'ENCRYPTION_KEY=${ENCRYPTION_KEY}',
+                'GOLOGIN_API_TOKEN=${GOLOGIN_API_TOKEN}',
                 f'REDIS_HOST={redis_name}',
                 f'REDIS_PORT={redis_internal_port}',
-                'CONCURRENT_FANS=3'
+                'CONCURRENT_FANS=10'
             ],
             'volumes': [
                 './auth_multi.json:/app/auth_multi.json:ro',
@@ -362,6 +374,38 @@ def generate_docker_compose(
         }
     }
 
+    # GoLogin Keep-Alive service (pings all profiles every 5 minutes)
+    gologin_keepalive_service = 'gologin-keepalive'
+    compose_dict['services'][gologin_keepalive_service] = {
+        'build': {
+            'context': '.',
+            'dockerfile': 'Dockerfile.gologin_keepalive'
+        },
+        'container_name': f'{container_prefix}-gologin-keepalive',
+        'environment': [
+            'GOLOGIN_API_TOKEN=${GOLOGIN_API_TOKEN}',
+            'DATABASE_URL=${DATABASE_URL}',
+            'ENCRYPTION_KEY=${ENCRYPTION_KEY}',
+            'PING_INTERVAL=300',  # 5 minutes
+            'FAIL_ON_ERROR=true'  # Stop container on ping failure
+        ],
+        'volumes': [
+            './test_logs:/app/logs' if is_test else './logs:/app/logs'
+        ],
+        'restart': 'no',  # Manual intervention on failure
+        'networks': [network_name],
+        'deploy': {
+            'resources': {
+                'limits': {
+                    'memory': '256M'
+                },
+                'reservations': {
+                    'memory': '64M'
+                }
+            }
+        }
+    }
+
     # Generate output filename
     if not output_file:
         if is_test:
@@ -378,15 +422,16 @@ def generate_docker_compose(
     print(f"  Creators: {len(creators)}")
     print(f"  Producers: {len(creators)} containers (initial data collection)")
     print(f"  Database Worker: 1 container (handles all creators)")
+    print(f"  GoLogin Keep-Alive: 1 container (pings all profiles every 5 min)")
     print(f"  WebSocket Listeners: {len(creators)} containers (24/7 event detection)")
     print(f"  Fan Sync Workers: {len(creators)} containers (every 4 hours)")
     print(f"  New Fan Processors: {len(creators)} containers (full history fetch)")
     print(f"  Known Fan Processors: {len(creators)} containers (incremental fetch)")
-    print(f"  Total: {2 + len(creators) * 5} containers")
+    print(f"  Total: {3 + len(creators) * 5} containers")
     print(f"\nCreators: {', '.join([c['name'] for c in creators])}")
     print(f"\nUsage:")
-    print(f"  Initial setup:  docker-compose -f {output_file} up redis producer-* db_worker --build -d")
-    print(f"  Real-time mode: docker-compose -f {output_file} up redis db_worker listener-* fan-sync-* new-fan-processor-* known-fan-processor-* --build -d")
+    print(f"  Initial setup:  docker-compose -f {output_file} up redis gologin-keepalive producer-* db_worker --build -d")
+    print(f"  Real-time mode: docker-compose -f {output_file} up redis gologin-keepalive db_worker listener-* fan-sync-* new-fan-processor-* known-fan-processor-* --build -d")
 
     return output_file
 

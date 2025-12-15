@@ -16,12 +16,14 @@ import time
 import gc
 from modules.logger import setup_logger
 import json
-from modules.authentication import load_auth_credentials, authenticate_account
+from modules.authentication import load_auth_credentials, authenticate_account, create_api_helper
+from modules.db_credential_loader import load_credentials_from_db
 from modules.message_fetcher import fetch_all_messages, fetch_all_messages_fast, process_messages_and_bundles
 from modules.redis_producer import RedisProducer
 from modules.conversation_loader import load_conversations_from_json, create_user_object_from_json
 from modules.checkpoint import CheckpointManager
 from ultima_scraper_api import OnlyFansAPI
+from ultima_scraper_api.apis.onlyfans.classes.extras import AuthDetails
 
 
 async def process_single_fan(
@@ -269,23 +271,33 @@ async def main() -> None:
     logger.info(f"Progress logging: Every 20 fans")
     logger.info("=" * 60)
 
-    # Load credentials for this specific creator
-    auth_file = os.getenv('AUTH_FILE', 'auth_multi.json')
+    # Load credentials from database (includes gologin_profile_id)
+    gologin_profile_id = None
     try:
-        all_auth_details = await load_auth_credentials(auth_file)
+        credentials = await load_credentials_from_db(model_id=creator_id)
+        if not credentials:
+            logger.error(f"✗ No credentials found in database for creator {creator_id}")
+            sys.exit(1)
+
+        cred = credentials[0]
+        gologin_profile_id = cred.get('gologin_profile_id')
+        if gologin_profile_id:
+            logger.info(f"GoLogin profile ID: {gologin_profile_id}")
+
+        # Create AuthDetails from credential
+        auth_obj = cred.get('auth', {})
+        auth_details = AuthDetails(
+            id=cred.get('id'),
+            username=cred.get('username', cred.get('name', '')),
+            cookie=auth_obj.get('cookie', ''),
+            x_bc=auth_obj.get('x_bc', ''),
+            user_agent=auth_obj.get('user_agent', ''),
+            email=cred.get('email', auth_obj.get('email', '')),
+            password=cred.get('password', auth_obj.get('password', '')),
+            support_2fa=auth_obj.get('support_2fa', True)
+        )
     except Exception as e:
-        logger.error(f"✗ Failed to load auth credentials: {str(e)}")
-        sys.exit(1)
-
-    # Find auth details for this creator
-    auth_details = None
-    for auth in all_auth_details:
-        if str(auth.id) == creator_id or auth.username == creator_id:
-            auth_details = auth
-            break
-
-    if not auth_details:
-        logger.error(f"✗ No auth credentials found for creator {creator_id}")
+        logger.error(f"✗ Failed to load credentials from database: {str(e)}")
         sys.exit(1)
 
     # Connect to Redis
@@ -294,11 +306,14 @@ async def main() -> None:
     try:
         await producer.connect()
 
-        # Authenticate creator account
+        # Authenticate creator account using GoLogin proxy if available
         logger.info(f"\nAuthenticating creator: {auth_details.username}...")
         try:
-            api = OnlyFansAPI()
-            authed = await authenticate_account(api, auth_details)
+            api, authed = await create_api_helper(
+                auth_details,
+                logger,
+                gologin_profile_id=gologin_profile_id
+            )
 
             if not authed:
                 logger.error(f"✗ Authentication failed for {auth_details.username}")
@@ -484,11 +499,14 @@ async def main() -> None:
                             except Exception as e:
                                 logger.warning(f"⚠️ Warning during session close: {str(e)}")
 
-                            # Create new API instance and reauthenticate
+                            # Create new API instance and reauthenticate with GoLogin
                             try:
-                                logger.info("✓ Creating new API instance...")
-                                api = OnlyFansAPI()
-                                authed = await authenticate_account(api, auth_details)
+                                logger.info("✓ Creating new API instance with GoLogin...")
+                                api, authed = await create_api_helper(
+                                    auth_details,
+                                    logger,
+                                    gologin_profile_id=gologin_profile_id
+                                )
                                 if not authed:
                                     logger.error(f"✗ Reauthentication failed for {auth_details.username}")
                                     sys.exit(1)

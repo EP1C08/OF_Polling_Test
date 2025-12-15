@@ -20,8 +20,10 @@ from datetime import datetime
 from typing import Optional
 import redis.asyncio as aioredis
 from modules.logger import setup_logger
-from modules.authentication import load_auth, create_api_helper
+from modules.authentication import create_api_helper
+from modules.db_credential_loader import load_credentials_from_db
 from modules.cutoff_manager import CutoffManager
+from ultima_scraper_api.apis.onlyfans.classes.extras import AuthDetails
 from modules.incremental_fetcher import IncrementalFetcher
 from modules.bundle_processor import process_bundle_from_message, is_bundle
 from modules.redis_producer import RedisProducer
@@ -67,6 +69,7 @@ class KnownFanProcessor:
         self.incremental_fetcher: Optional[IncrementalFetcher] = None
         self.semaphore: Optional[asyncio.Semaphore] = None
         self.active_tasks: set = set()
+        self.gologin_profile_id: Optional[str] = None
 
     async def initialize(self) -> bool:
         """Initialize all components.
@@ -76,17 +79,41 @@ class KnownFanProcessor:
         try:
             self.logger.info(f"Initializing known fan processor for {self.creator_name}...")
 
-            auth_details = load_auth(creator_id=self.creator_id)
-            if not auth_details:
+            # Load credentials from database (includes gologin_profile_id)
+            credentials = await load_credentials_from_db(model_id=self.creator_id)
+            if not credentials:
                 self.logger.error("=" * 70)
                 self.logger.error("AUTHENTICATION FAILED: Unable to load credentials")
                 self.logger.error(f"Creator ID: {self.creator_id}")
                 self.logger.error(f"Creator Name: {self.creator_name}")
-                self.logger.error("Check auth_multi.json for this creator")
+                self.logger.error("Check creator_credentials table for this creator")
                 self.logger.error("=" * 70)
                 return False
 
-            self.api, self.authed = await create_api_helper(auth_details, self.logger)
+            cred = credentials[0]
+            self.gologin_profile_id = cred.get('gologin_profile_id')
+            if self.gologin_profile_id:
+                self.logger.info(f"GoLogin profile ID: {self.gologin_profile_id}")
+
+            # Create AuthDetails from credential
+            auth_obj = cred.get('auth', {})
+            auth_details = AuthDetails(
+                id=cred.get('id'),
+                username=cred.get('username', cred.get('name', '')),
+                cookie=auth_obj.get('cookie', ''),
+                x_bc=auth_obj.get('x_bc', ''),
+                user_agent=auth_obj.get('user_agent', ''),
+                email=cred.get('email', auth_obj.get('email', '')),
+                password=cred.get('password', auth_obj.get('password', '')),
+                support_2fa=auth_obj.get('support_2fa', True)
+            )
+
+            # Create API with GoLogin proxy support
+            self.api, self.authed = await create_api_helper(
+                auth_details,
+                self.logger,
+                gologin_profile_id=self.gologin_profile_id
+            )
             if not self.authed:
                 self.logger.error("=" * 70)
                 self.logger.error("AUTHENTICATION FAILED: Unable to authenticate with OnlyFans")

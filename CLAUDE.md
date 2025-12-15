@@ -4,22 +4,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-OnlyFans message polling system built with Python that fetches messages and bundles from OnlyFans creators' conversations using the `ultima-scraper-api`. The system uses a producer-consumer architecture with Redis streams for distributed message processing and exports data to CSV files.
+OnlyFans message polling system built with Python that fetches messages and bundles from OnlyFans creators' conversations using the `ultima-scraper-api`. The system uses a producer-consumer architecture with Redis Lists for distributed message processing and exports data to PostgreSQL database.
 
 ## Architecture
 
 ### Producer-Consumer Model
-- **Producer** ([producer.py](producer.py)): Fetches messages from OnlyFans API and pushes to Redis Streams (one instance per creator)
-- **Consumer** ([consumer.py](consumer.py)): Reads from Redis Streams and exports to CSV files (one instance per creator)
-- **Standalone** ([main.py](main.py)): Single-process version that fetches and exports directly without Redis
+- **Producer** ([producer.py](producer.py)): Fetches messages from OnlyFans API and pushes to Redis Lists (one instance per creator, initial bulk collection)
+- **Database Worker** ([db_worker.py](db_worker.py)): Reads from Redis Lists and saves to PostgreSQL (one container handles all creators)
+- **WebSocket Listener** ([websocket_listener.py](websocket_listener.py)): Real-time event detection via OnlyFans WebSocket (event-only, routes to queues)
+- **New Fan Processor** ([new_fan_processor.py](new_fan_processor.py)): Fetches full message history for new fans from priority queue
+- **Known Fan Processor** ([known_fan_processor.py](known_fan_processor.py)): Fetches incremental messages for known fans from queue
+- **Fan Sync Worker** ([fan_sync.py](fan_sync.py)): Detects new subscribers every 4 hours
+- **Standalone** ([main.py](main.py)): Single-process version that fetches and exports directly without Redis (legacy)
 
 ### Data Flow
 1. Producer authenticates with OnlyFans API using credentials from `auth_multi.json`
 2. Loads conversation list from JSON files in `conversations/` directory
 3. Processes fans concurrently (3 at a time by default) and fetches message history
 4. Messages are processed into 5 data types: messages, bundles, bundle_items, fan_interactions, analytics
-5. Data is pushed to Redis Streams (namespace: `of:{creator_id}:{stream_type}`)
-6. Consumer reads from streams and appends to CSV files incrementally
+5. Data is pushed to Redis Lists (namespace: `of:{creator_id}:{list_type}`)
+6. Database worker reads from lists and batch inserts to PostgreSQL
 7. Producer signals completion via `of:{creator_id}:producer_done` Redis key
 
 ### Checkpoint System ([modules/checkpoint.py](modules/checkpoint.py))
@@ -32,11 +36,14 @@ Thread-safe checkpoint manager persists processing state to JSON files in `check
 ### Key Modules
 - **authentication.py**: Loads `auth_multi.json` (supports nested `accounts` array or flat list), creates `AuthDetails` objects
 - **message_fetcher.py**: Fetches paginated message history, processes bundles (media bundles/mass messages)
+- **fast_message_fetcher.py**: High-performance fetcher with 50-message batches (2.5x faster)
 - **bundle_processor.py**: Extracts bundle metadata, media items, purchase status, analytics
-- **redis_producer.py**: Pushes to Redis Streams with sanitization, handles heavy fans and errors
-- **redis_consumer.py**: Consumer groups for parallel processing, incremental CSV append, memory management
+- **redis_producer.py**: Pushes to Redis Lists with sanitization (LPUSH operations)
+- **cutoff_manager.py**: Queries last message_id from database for incremental fetching
+- **incremental_fetcher.py**: Fetches only new messages using cutoff_id (90%+ reduction)
 - **conversation_loader.py**: Loads lightweight conversation data from JSON files (avoids API calls)
-- **sanitizer.py**: Removes invalid UTF-8 and control characters for CSV compatibility
+- **sanitizer.py**: Removes invalid UTF-8 and control characters for database compatibility
+- **db_credential_loader.py**: Loads encrypted credentials from PostgreSQL
 
 ## Authentication
 
@@ -97,14 +104,11 @@ This dynamically generates `docker-compose.generated.yml` (or `.test.yml`) based
 
 ### Run Containers
 ```bash
-# CSV Export Mode (no database)
-docker-compose -f docker-compose.generated.yml up redis producer-* consumer-* --build -d
-
-# Database Mode (with PostgreSQL)
+# Initial Bulk Collection (fetch all historical data, ~16 hours)
 docker-compose -f docker-compose.generated.yml up redis producer-* db_worker --build -d
 
-# Real-time mode (24/7 WebSocket monitoring)
-docker-compose -f docker-compose.generated.yml up redis db_worker listener-* fan-sync-* --build -d
+# Real-time mode (24/7 WebSocket monitoring + on-demand processing)
+docker-compose -f docker-compose.generated.yml up redis db_worker listener-* fan-sync-* new-fan-processor-* known-fan-processor-* --build -d
 
 # All services
 docker-compose -f docker-compose.generated.yml up --build -d
@@ -112,14 +116,23 @@ docker-compose -f docker-compose.generated.yml up --build -d
 
 ### Monitor Progress
 ```bash
-# Producers
+# Producers (initial bulk collection)
 docker logs -f of-producer-{creator_name}
 
-# CSV Consumers (if using CSV mode)
-docker logs -f of-consumer-{creator_name}
-
-# Database Worker (if using database mode)
+# Database Worker (saves all data to PostgreSQL)
 docker logs -f of-db-worker
+
+# WebSocket Listeners (real-time message detection)
+docker logs -f of-listener-{creator_name}
+
+# Fan Sync Workers (new subscriber detection)
+docker logs -f of-fan-sync-{creator_name}
+
+# New Fan Processors (full history fetch for new fans)
+docker logs -f of-new-fan-processor-{creator_name}
+
+# Known Fan Processors (incremental fetch for known fans)
+docker logs -f of-known-fan-processor-{creator_name}
 ```
 
 ### Configuration via Environment Variables
@@ -145,7 +158,7 @@ docker logs -f of-db-worker
 ### Architecture Components
 
 #### 1. WebSocket Listener ([websocket_listener.py](websocket_listener.py))
-- **Purpose**: 24/7 real-time message notifications
+- **Purpose**: 24/7 real-time event detection (EVENT-ONLY, no fetching)
 - **Technology**: Uses `ultima-scraper-api`'s WebSocket support (`authed.listen()` and `authed.subscribe()`)
 - **Deployment**: 1 container per creator (7 total for current setup)
 - **Memory**: ~300-400MB per listener
@@ -153,9 +166,35 @@ docker logs -f of-db-worker
 **How it works:**
 1. Connects to OnlyFans WebSocket and subscribes to event queue
 2. Receives instant notification when new message arrives
-3. Queries database for `cutoff_id` (last known message_id for that fan)
-4. Fetches ONLY new messages using incremental fetcher
-5. Pushes to Redis lists → db_worker saves to PostgreSQL
+3. Queries database to check if fan exists (has messages in `messages_new` table)
+4. Routes fan to appropriate Redis queue:
+   - NEW fan (not in DB) → `new_fans_priority` queue → new_fan_processor
+   - KNOWN fan (in DB) → `known_fans_queue` → known_fan_processor
+
+#### 1a. New Fan Processor ([new_fan_processor.py](new_fan_processor.py))
+- **Purpose**: Fetch full message history for new fans
+- **Queue**: `of:{creator_id}:new_fans_priority`
+- **Deployment**: 1 container per creator
+- **Memory**: 1GB limit (needs to fetch full histories)
+
+**How it works:**
+1. BRPOP from `new_fans_priority` queue (blocking wait)
+2. Fetch FULL message history (cutoff_id=None)
+3. Push to Redis lists → db_worker saves to PostgreSQL
+4. Mark as completed in checkpoint
+
+#### 1b. Known Fan Processor ([known_fan_processor.py](known_fan_processor.py))
+- **Purpose**: Fetch incremental messages for known fans
+- **Queue**: `of:{creator_id}:known_fans_queue`
+- **Deployment**: 1 container per creator
+- **Memory**: 512MB limit (lightweight incremental fetch)
+
+**How it works:**
+1. BRPOP from `known_fans_queue` (blocking wait)
+2. Get cutoff_id from database (last known message_id)
+3. Fetch ONLY new messages using incremental fetcher
+4. Push to Redis lists → db_worker saves to PostgreSQL
+5. Publish to Pub/Sub for external consumers
 
 #### 2. Fan Sync Worker ([fan_sync.py](fan_sync.py))
 - **Purpose**: Detect new subscribers every 4 hours
@@ -212,7 +251,7 @@ docker-compose -f docker-compose.generated.yml up redis producer-* db_worker --b
 
 **Real-Time Monitoring (24/7):**
 ```bash
-docker-compose -f docker-compose.generated.yml up redis db_worker listener-* fan-sync-* --build -d
+docker-compose -f docker-compose.generated.yml up redis db_worker listener-* fan-sync-* new-fan-processor-* known-fan-processor-* --build -d
 ```
 
 **Monitor Logs:**
@@ -261,15 +300,36 @@ docker logs -f of-db-worker
 └─────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────┐
-│ ONGOING 24/7 REAL-TIME                                           │
-│                                                                  │
-│ ┌─ WebSocket Event → cutoff_manager → incremental_fetcher ─┐   │
-│ │   (instant)          (<50ms)         (fetch new only)     │   │
-│ └────────────────────────→ Redis → db_worker → PostgreSQL ─┘   │
-│                                                                  │
+│ ONGOING 24/7 REAL-TIME                                          │
+│                                                                 │
+│ WebSocket Event                                                 │
+│     │                                                           │
+│     ▼                                                           │
+│ websocket_listener.py (EVENT-ONLY)                              │
+│     │ (check messages_new table)                                │
+│     │                                                           │
+│     ├─ NEW fan (cutoff_id = None)                               │
+│     │  │ LPUSH to new_fans_priority                             │
+│     │  ▼                                                        │
+│     │  new_fan_processor.py                                     │
+│     │  │ (full history fetch)                                   │
+│     │  ▼                                                        │
+│     │  Redis → db_worker → PostgreSQL                           │
+│     │                                                           │
+│     └─ KNOWN fan (cutoff_id exists)                             │
+│        │ LPUSH to known_fans_queue                              │
+│        ▼                                                        │
+│        known_fan_processor.py                                   │
+│        │ (incremental fetch)                                    │
+│        ▼                                                        │
+│        Redis → db_worker → PostgreSQL                           │
+│        │                                                        │
+│        ▼                                                        │
+│        Pub/Sub publish                                          │
+│                                                                 │
 │ ┌─ Fan Sync (every 4h) ──────────────────────────────────┐     │
 │ │   DB query (20-30s) → Compare JSON → Fetch new fans    │     │
-│ └────────────────────────→ Redis → db_worker → PostgreSQL ┘     │
+│ └────────────────────────→ Redis → db_worker → PostgreSQL┘     │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -279,16 +339,20 @@ For 7 creators (Ayumi, Hyunnie, Irene, Jess, Loli, Tayla):
 - **1 Redis** container
 - **7 Producers** (initial setup only, exit when done)
 - **1 Database Worker** (handles all creators)
-- **7 WebSocket Listeners** (24/7 real-time notifications)
+- **7 WebSocket Listeners** (24/7 event detection, routes to queues)
+- **7 New Fan Processors** (full history fetch for new fans)
+- **7 Known Fan Processors** (incremental fetch for known fans)
 - **7 Fan Sync Workers** (new subscriber detection every 4 hours)
-- **Total: 23 containers** (1 Redis + 1 db_worker + 7 listeners + 7 fan_sync + 7 producers)
+- **Total: 37 containers** (1 Redis + 1 db_worker + 7 listeners + 7 new_fan_processor + 7 known_fan_processor + 7 fan_sync + 7 producers)
 
 **Memory Usage:**
 - Redis: 2GB limit
 - Database Worker: 1.5GB limit
 - Each Listener: 512MB limit
+- Each New Fan Processor: 1GB limit
+- Each Known Fan Processor: 512MB limit
 - Each Fan Sync: 512MB limit
-- Total: ~9GB peak
+- Total: ~15GB peak
 
 ## Common Commands
 
