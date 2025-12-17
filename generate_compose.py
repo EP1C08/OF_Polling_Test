@@ -205,7 +205,8 @@ def generate_docker_compose(
                 'ENCRYPTION_KEY=${ENCRYPTION_KEY}',
                 'GOLOGIN_API_TOKEN=${GOLOGIN_API_TOKEN}',
                 f'REDIS_HOST={redis_name}',
-                f'REDIS_PORT={redis_internal_port}'
+                f'REDIS_PORT={redis_internal_port}',
+                'MIN_MESSAGE_AGE_HOURS=24'
             ],
             'volumes': [
                 './auth_multi.json:/app/auth_multi.json:ro',
@@ -242,7 +243,8 @@ def generate_docker_compose(
                 'GOLOGIN_API_TOKEN=${GOLOGIN_API_TOKEN}',
                 f'REDIS_HOST={redis_name}',
                 f'REDIS_PORT={redis_internal_port}',
-                'SYNC_INTERVAL=14400'  # 4 hours
+                'SYNC_INTERVAL=14400',  # 4 hours
+                'MIN_MESSAGE_AGE_HOURS=24'
             ],
             'volumes': [
                 './auth_multi.json:/app/auth_multi.json:ro',
@@ -280,7 +282,8 @@ def generate_docker_compose(
                 'GOLOGIN_API_TOKEN=${GOLOGIN_API_TOKEN}',
                 f'REDIS_HOST={redis_name}',
                 f'REDIS_PORT={redis_internal_port}',
-                'CONCURRENT_FANS=10'
+                'CONCURRENT_FANS=10',
+                'MIN_MESSAGE_AGE_HOURS=24'
             ],
             'volumes': [
                 './auth_multi.json:/app/auth_multi.json:ro',
@@ -318,7 +321,8 @@ def generate_docker_compose(
                 'GOLOGIN_API_TOKEN=${GOLOGIN_API_TOKEN}',
                 f'REDIS_HOST={redis_name}',
                 f'REDIS_PORT={redis_internal_port}',
-                'CONCURRENT_FANS=10'
+                'CONCURRENT_FANS=10',
+                'MIN_MESSAGE_AGE_HOURS=24'
             ],
             'volumes': [
                 './auth_multi.json:/app/auth_multi.json:ro',

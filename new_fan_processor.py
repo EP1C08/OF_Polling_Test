@@ -27,6 +27,8 @@ from ultima_scraper_api.apis.onlyfans.classes.extras import AuthDetails
 from modules.message_fetcher import fetch_all_messages_fast
 from modules.bundle_processor import process_bundle_from_message, is_bundle
 from modules.redis_producer import RedisProducer
+from modules.chat_metadata_fetcher import ChatMetadataFetcher
+from modules.message_age_filter import is_message_old_enough
 
 
 class NewFanProcessor:
@@ -179,7 +181,17 @@ class NewFanProcessor:
                 self.checkpoint.mark_in_progress(fan_id, remove=True)  # Remove from in-progress
                 return False
 
-            self.logger.info(f"📥 Fetching FULL message history for fan {fan_id} (@{user.username})...")
+            # 24-hour pre-check: Skip if last message is too recent
+            metadata_fetcher = ChatMetadataFetcher(self.authed, self.logger)
+            last_msg_time = await metadata_fetcher.get_last_message_time(fan_id)
+
+            min_age_hours = int(os.getenv('MIN_MESSAGE_AGE_HOURS', '24'))
+            if last_msg_time and not is_message_old_enough(last_msg_time, min_age_hours):
+                self.logger.info(f"New fan {fan_id} last message < {min_age_hours}h old, deferring")
+                self.checkpoint.mark_in_progress(fan_id, remove=True)  # Remove from in-progress
+                return True  # Skip for now, will be re-queued when message ages
+
+            self.logger.info(f"Fetching FULL message history for fan {fan_id} (@{user.username})...")
 
             # Fetch FULL message history (cutoff_id=None)
             messages = await fetch_all_messages_fast(

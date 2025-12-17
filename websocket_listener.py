@@ -23,6 +23,7 @@ from modules.authentication import create_api_helper
 from modules.cutoff_manager import CutoffManager
 from modules.redis_producer import RedisProducer
 from modules.db_credential_loader import load_credentials_from_db
+from modules.message_age_filter import is_message_old_enough
 
 
 class WebSocketListener:
@@ -214,6 +215,21 @@ class WebSocketListener:
                 return
 
             self.logger.info(f"New message event for fan {fan_id}")
+
+            # Extract message timestamp for 24-hour check
+            message_created_at = None
+            if isinstance(parsed_data, dict) and 'api2_chat_message' in parsed_data:
+                message_data = parsed_data['api2_chat_message']
+                if isinstance(message_data, dict):
+                    message_created_at = message_data.get('createdAt') or message_data.get('created_at')
+
+            # Check 24-hour rule: skip messages that are too recent
+            min_age_hours = int(os.getenv('MIN_MESSAGE_AGE_HOURS', '24'))
+            if not is_message_old_enough(message_created_at, min_age_hours):
+                self.logger.info(
+                    f"Fan {fan_id} message < {min_age_hours}h old, skipping (will process later)"
+                )
+                return
 
             asyncio.create_task(self._route_fan_to_queue(fan_id))
 

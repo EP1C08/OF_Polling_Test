@@ -27,6 +27,8 @@ from ultima_scraper_api.apis.onlyfans.classes.extras import AuthDetails
 from modules.incremental_fetcher import IncrementalFetcher
 from modules.bundle_processor import process_bundle_from_message, is_bundle
 from modules.redis_producer import RedisProducer
+from modules.chat_metadata_fetcher import ChatMetadataFetcher
+from modules.message_age_filter import is_message_old_enough
 
 
 class KnownFanProcessor:
@@ -183,6 +185,15 @@ class KnownFanProcessor:
             if not user:
                 self.logger.warning(f"Could not get user object for fan {fan_id}")
                 return False
+
+            # 24-hour pre-check: Skip if last message is too recent
+            metadata_fetcher = ChatMetadataFetcher(self.authed, self.logger)
+            last_msg_time = await metadata_fetcher.get_last_message_time(fan_id)
+
+            min_age_hours = int(os.getenv('MIN_MESSAGE_AGE_HOURS', '24'))
+            if last_msg_time and not is_message_old_enough(last_msg_time, min_age_hours):
+                self.logger.info(f"Fan {fan_id} last message < {min_age_hours}h old, skipping")
+                return True  # Skip but mark as success
 
             self.logger.info(
                 f"Fetching new messages for fan {fan_id} (@{user.username})..."
