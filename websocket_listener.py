@@ -24,6 +24,7 @@ from modules.cutoff_manager import CutoffManager
 from modules.redis_producer import RedisProducer
 from modules.db_credential_loader import load_credentials_from_db
 from modules.message_age_filter import is_message_old_enough
+from modules.timewaster import TimewasterHandler
 
 
 class WebSocketListener:
@@ -57,6 +58,7 @@ class WebSocketListener:
         self.cutoff_manager: Optional[CutoffManager] = None
         self.redis_producer: Optional[RedisProducer] = None
         self.gologin_profile_id: Optional[str] = None
+        self.timewaster_handler: Optional[TimewasterHandler] = None
 
     async def initialize(self) -> bool:
         """Initialize all components.
@@ -114,6 +116,19 @@ class WebSocketListener:
                 return False
 
             self.logger.info("Authenticated with OnlyFans API")
+
+            # Initialize timewaster handler
+            tw_enabled = os.getenv('TW_ENABLED', 'true').lower() == 'true'
+            if tw_enabled:
+                self.timewaster_handler = TimewasterHandler(
+                    authed=self.authed,
+                    model_id=self.creator_id,
+                    model_name=self.creator_name,
+                    logger=self.logger
+                )
+                self.logger.info("Timewaster handler initialized")
+            else:
+                self.logger.info("Timewaster checking disabled (TW_ENABLED=false)")
 
             self.redis_producer = RedisProducer(
                 redis_host=self.redis_host,
@@ -242,11 +257,12 @@ class WebSocketListener:
         """Route fan to appropriate queue based on database check.
 
         Uses Redis lock to prevent duplicate queue pushes for same fan.
+        Checks timewaster status before routing - timewasters are marked and skipped.
 
         :param fan_id: Fan's OnlyFans ID
         """
         lock_key = f"of:{self.creator_id}:processing_lock:{fan_id}"
-        lock_ttl = 60
+        lock_ttl = 300  # Increased to 5 min for Live API fetch during timewaster check
 
         try:
             lock_acquired = await self.redis_producer.redis.set(
@@ -263,6 +279,24 @@ class WebSocketListener:
             self.logger.debug(f"Acquired processing lock for fan {fan_id}")
 
             cutoff_id = await self.cutoff_manager.get_cutoff_id(self.creator_id, fan_id)
+
+            # --- TIMEWASTER CHECK (after new/known determination) ---
+            if self.timewaster_handler:
+                try:
+                    analysis = await self.timewaster_handler.check_and_mark_timewaster(fan_id)
+                    if analysis and analysis.is_timewaster:
+                        self.logger.info(
+                            f"TIMEWASTER SKIPPED: Fan {fan_id} - "
+                            f"${analysis.total_spend:.2f} spend, "
+                            f"{analysis.total_messages} msgs, "
+                            f"${analysis.rpm:.4f} RPM"
+                        )
+                        return  # Skip queue routing for timewasters
+                except Exception as tw_error:
+                    self.logger.warning(
+                        f"Timewaster check failed for {fan_id}, continuing to queue: {str(tw_error)}"
+                    )
+            # --- END TIMEWASTER CHECK ---
 
             if cutoff_id is None:
                 await self.redis_producer.redis.lpush(
