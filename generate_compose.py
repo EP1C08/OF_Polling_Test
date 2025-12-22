@@ -176,7 +176,7 @@ def generate_docker_compose(
             compose_dict['services'][producer_service]['environment'].extend([
                 'TEST_LIMIT=5',         # Only process 5 fans per creator
                 'MESSAGE_LIMIT=10',
-                'CONCURRENT_FANS=10',   # 10 fans at once
+                'CONCURRENT_FANS=50',   # 10 fans at once
                 'FAN_DELAY=5',          # 5s between batches
                 'FETCH_TIMEOUT=600',    # 10 minute timeout
                 'REAUTH_INTERVAL=100'   # Reauth every 100 fans
@@ -184,13 +184,13 @@ def generate_docker_compose(
         else:
             # Production mode - add concurrent processing configuration
             compose_dict['services'][producer_service]['environment'].extend([
-                'CONCURRENT_FANS=10',   # 10 fans at once
+                'CONCURRENT_FANS=50',   # 10 fans at once
                 'FAN_DELAY=5',          # 5s between batches
                 'FETCH_TIMEOUT=600',    # 10 minute timeout
                 'REAUTH_INTERVAL=100'   # Reauthenticate every 100 fans
             ])
 
-        # WebSocket Listener service (24/7 real-time notifications)
+        # WebSocket Listener service (24/7 real-time notifications + timewaster detection)
         listener_service = f'listener-{creator_name}'
         compose_dict['services'][listener_service] = {
             'build': {
@@ -206,7 +206,14 @@ def generate_docker_compose(
                 'GOLOGIN_API_TOKEN=${GOLOGIN_API_TOKEN}',
                 f'REDIS_HOST={redis_name}',
                 f'REDIS_PORT={redis_internal_port}',
-                'MIN_MESSAGE_AGE_HOURS=24'
+                'MIN_MESSAGE_AGE_HOURS=24',
+                # Timewaster detection settings
+                'TW_ENABLED=true',
+                'TW_MAX_SPEND=50.0',
+                'TW_MIN_MESSAGES=50',
+                'TW_MAX_RPM=0.05',
+                'TW_COLLECTION_NAME=time waster',
+                'TW_DISPLAY_PREFIX=AI - Timewaster'
             ],
             'volumes': [
                 './auth_multi.json:/app/auth_multi.json:ro',
@@ -218,10 +225,10 @@ def generate_docker_compose(
             'deploy': {
                 'resources': {
                     'limits': {
-                        'memory': '512M'
+                        'memory': '1G'  # Increased for Live API message fetching
                     },
                     'reservations': {
-                        'memory': '128M'
+                        'memory': '256M'
                     }
                 }
             }
