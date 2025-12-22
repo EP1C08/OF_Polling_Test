@@ -417,40 +417,6 @@ def generate_docker_compose(
         }
     }
 
-    # Timewaster Detector service (scheduled analytics every 12 hours)
-    timewaster_service = 'timewaster-detector'
-    compose_dict['services'][timewaster_service] = {
-        'build': {
-            'context': '.',
-            'dockerfile': 'Dockerfile.timewaster'
-        },
-        'container_name': f'{container_prefix}-timewaster-detector',
-        'environment': [
-            'DATABASE_URL=${DATABASE_URL}',
-            'RUN_INTERVAL=43200',  # 12 hours
-            'TW_MAX_SPEND=50.00',
-            'TW_MIN_MESSAGES=50',
-            'TW_MAX_RPM=0.05'
-        ],
-        'volumes': [
-            './test_output:/app/output' if is_test else './output:/app/output',
-            './test_logs:/app/logs' if is_test else './logs:/app/logs'
-        ],
-        'depends_on': [db_worker_service],
-        'restart': 'unless-stopped',
-        'networks': [network_name],
-        'deploy': {
-            'resources': {
-                'limits': {
-                    'memory': '512M'
-                },
-                'reservations': {
-                    'memory': '128M'
-                }
-            }
-        }
-    }
-
     # Generate output filename
     if not output_file:
         if is_test:
@@ -468,12 +434,11 @@ def generate_docker_compose(
     print(f"  Producers: {len(creators)} containers (initial data collection)")
     print(f"  Database Worker: 1 container (handles all creators)")
     print(f"  GoLogin Keep-Alive: 1 container (pings all profiles every 5 min)")
-    print(f"  Timewaster Detector: 1 container (RPM analysis every 12 hours)")
-    print(f"  WebSocket Listeners: {len(creators)} containers (24/7 event detection)")
+    print(f"  WebSocket Listeners: {len(creators)} containers (24/7 event detection + timewaster check)")
     print(f"  Fan Sync Workers: {len(creators)} containers (every 4 hours)")
     print(f"  New Fan Processors: {len(creators)} containers (full history fetch)")
     print(f"  Known Fan Processors: {len(creators)} containers (incremental fetch)")
-    print(f"  Total: {4 + len(creators) * 5} containers")
+    print(f"  Total: {3 + len(creators) * 5} containers")
     print(f"\nCreators: {', '.join([c['name'] for c in creators])}")
     print(f"\nUsage:")
     print(f"  Initial setup:  docker-compose -f {output_file} up redis gologin-keepalive producer-* db_worker --build -d")
