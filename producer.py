@@ -25,6 +25,20 @@ from modules.checkpoint import CheckpointManager
 from ultima_scraper_api import OnlyFansAPI
 from ultima_scraper_api.apis.onlyfans.classes.extras import AuthDetails
 
+# Creators that use GALEN_API_TOKEN (different GoLogin account)
+GALEN_CREATORS = ["Juno", "avabarham2", "Luna", "luna"]
+
+
+def get_gologin_token(creator_name: str) -> str:
+    """Get the correct GoLogin API token for a creator.
+
+    :param creator_name: Creator's username/name.
+    :return: GoLogin API token string.
+    """
+    if creator_name in GALEN_CREATORS:
+        return os.getenv("GALEN_API_TOKEN")
+    return os.getenv("GOLOGIN_API_TOKEN")
+
 
 async def process_single_fan(
     fan_user,
@@ -308,11 +322,13 @@ async def main() -> None:
 
         # Authenticate creator account using GoLogin proxy if available
         logger.info(f"\nAuthenticating creator: {auth_details.username}...")
+        gologin_token = get_gologin_token(auth_details.username)
         try:
             api, authed = await create_api_helper(
                 auth_details,
                 logger,
-                gologin_profile_id=gologin_profile_id
+                gologin_profile_id=gologin_profile_id,
+                gologin_api_token=gologin_token
             )
 
             if not authed:
@@ -505,7 +521,8 @@ async def main() -> None:
                                 api, authed = await create_api_helper(
                                     auth_details,
                                     logger,
-                                    gologin_profile_id=gologin_profile_id
+                                    gologin_profile_id=gologin_profile_id,
+                                    gologin_api_token=gologin_token
                                 )
                                 if not authed:
                                     logger.error(f"✗ Reauthentication failed for {auth_details.username}")

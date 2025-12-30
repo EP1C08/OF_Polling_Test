@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 from typing import Optional, List, Tuple
 from ultima_scraper_api import OnlyFansAPI, select_api
-from ultima_scraper_api.apis.onlyfans.classes.extras import AuthDetails
+from ultima_scraper_api.apis.onlyfans.classes.extras import AuthDetails, CookieParser
 from ultima_scraper_api.apis.onlyfans.authenticator import OnlyFansAuthenticator
 from ultima_scraper_api.config import UltimaScraperAPIConfig
 
@@ -342,6 +342,7 @@ async def create_api_helper(
     auth_details: AuthDetails,
     logger,
     gologin_profile_id: Optional[str] = None,
+    gologin_api_token: Optional[str] = None,
     use_gologin: Optional[bool] = None,
     use_gologin_credentials: bool = False
 ) -> Tuple[Optional[OnlyFansAPI], Optional[object]]:
@@ -353,13 +354,15 @@ async def create_api_helper(
     :param auth_details: AuthDetails object with credentials.
     :param logger: Logger instance.
     :param gologin_profile_id: Optional GoLogin profile ID for proxy routing.
+    :param gologin_api_token: Optional GoLogin API token. If not provided, uses GOLOGIN_API_TOKEN env var.
     :param use_gologin: If True, uses GoLogin for proxy. If None, auto-detects from gologin_profile_id.
     :param use_gologin_credentials: If True, also use GoLogin cookies/x_bc (default: False, use DB credentials).
     :return: Tuple of (api, authed) or (None, None) if failed.
     """
     # Determine if we should use GoLogin
+    token = gologin_api_token or os.getenv("GOLOGIN_API_TOKEN")
     if use_gologin is None:
-        use_gologin = bool(gologin_profile_id) and bool(os.getenv("GOLOGIN_API_TOKEN"))
+        use_gologin = bool(gologin_profile_id) and bool(token)
 
     try:
         proxy_url = None
@@ -369,7 +372,7 @@ async def create_api_helper(
             logger.info(f"Using GoLogin profile {gologin_profile_id} for {auth_details.username}")
 
             try:
-                gologin_manager = GoLoginManager()
+                gologin_manager = GoLoginManager(api_token=token)
                 profile_data = await gologin_manager.get_profile(gologin_profile_id)
 
                 if profile_data:
@@ -388,7 +391,7 @@ async def create_api_helper(
                         fresh_creds = await gologin_manager.get_fresh_credentials(gologin_profile_id)
                         if fresh_creds:
                             if fresh_creds.get("cookies"):
-                                auth_details.cookie = fresh_creds["cookies"]
+                                auth_details.cookie = CookieParser(fresh_creds["cookies"])
                                 logger.debug(f"  Overriding cookies from GoLogin")
                             if fresh_creds.get("x_bc"):
                                 auth_details.x_bc = fresh_creds["x_bc"]

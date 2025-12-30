@@ -29,6 +29,20 @@ from modules.checkpoint import CheckpointManager
 from modules.chat_metadata_fetcher import ChatMetadataFetcher
 from modules.message_age_filter import is_message_old_enough
 
+# Creators that use GALEN_API_TOKEN (different GoLogin account)
+GALEN_CREATORS = ["Juno", "avabarham2", "Luna", "luna"]
+
+
+def get_gologin_token(creator_name: str) -> str:
+    """Get the correct GoLogin API token for a creator.
+
+    :param creator_name: Creator's username/name.
+    :return: GoLogin API token string.
+    """
+    if creator_name in GALEN_CREATORS:
+        return os.getenv("GALEN_API_TOKEN")
+    return os.getenv("GOLOGIN_API_TOKEN")
+
 
 class FanSync:
     """Periodic fan synchronization to detect new subscribers."""
@@ -104,10 +118,12 @@ class FanSync:
             )
 
             # Create API with GoLogin proxy support
+            gologin_token = get_gologin_token(self.creator_name)
             self.api, self.authed = await create_api_helper(
                 auth_details,
                 self.logger,
-                gologin_profile_id=self.gologin_profile_id
+                gologin_profile_id=self.gologin_profile_id,
+                gologin_api_token=gologin_token
             )
             if not self.authed:
                 self.logger.error("=" * 70)

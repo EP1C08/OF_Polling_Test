@@ -1,11 +1,55 @@
 """Dynamic Docker Compose Generator.
 
-Generates docker-compose.yml based on creators in auth_multi.json.
+Generates docker-compose.yml based on creators from database (primary)
+or auth_multi.json (fallback).
 """
 
+import asyncio
 import json
+import logging
+import os
 import yaml
 from pathlib import Path
+from typing import List, Optional
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+logger = logging.getLogger(__name__)
+
+
+async def load_creators_from_database(
+    database_url: Optional[str] = None,
+    encryption_key: Optional[str] = None
+) -> List[dict]:
+    """Load creator info from creator_credentials database table.
+
+    :param database_url: PostgreSQL connection string. Falls back to DATABASE_URL env var.
+    :param encryption_key: Fernet encryption key. Falls back to ENCRYPTION_KEY env var.
+    :return: List of creator dictionaries with 'id' and 'name' keys.
+    :raises Exception: If database connection fails.
+    """
+    from modules.db_credential_loader import load_credentials_from_db
+
+    credentials = await load_credentials_from_db(
+        database_url=database_url,
+        encryption_key=encryption_key,
+        only_authenticated=False
+    )
+
+    creators = []
+    for cred in credentials:
+        creator_id = cred.get('id')
+        creator_name = cred.get('name') or cred.get('username') or str(creator_id)
+
+        if creator_id:
+            creators.append({
+                'id': str(creator_id),
+                'name': creator_name
+            })
+
+    return creators
 
 
 def load_creators_from_auth(auth_file: str = 'auth_multi.json') -> list:
@@ -148,7 +192,8 @@ def generate_docker_compose(
                 'AUTH_FILE=/app/auth_multi.json',
                 'DATABASE_URL=${DATABASE_URL}',
                 'ENCRYPTION_KEY=${ENCRYPTION_KEY}',
-                'GOLOGIN_API_TOKEN=${GOLOGIN_API_TOKEN}'
+                'GOLOGIN_API_TOKEN=${GOLOGIN_API_TOKEN}',
+                'GALEN_API_TOKEN=${GALEN_API_TOKEN}'
             ],
             'volumes': [
                 './auth_multi.json:/app/auth_multi.json:ro',
@@ -204,6 +249,7 @@ def generate_docker_compose(
                 'DATABASE_URL=${DATABASE_URL}',
                 'ENCRYPTION_KEY=${ENCRYPTION_KEY}',
                 'GOLOGIN_API_TOKEN=${GOLOGIN_API_TOKEN}',
+                'GALEN_API_TOKEN=${GALEN_API_TOKEN}',
                 f'REDIS_HOST={redis_name}',
                 f'REDIS_PORT={redis_internal_port}',
                 'MIN_MESSAGE_AGE_HOURS=24',
@@ -248,6 +294,7 @@ def generate_docker_compose(
                 'DATABASE_URL=${DATABASE_URL}',
                 'ENCRYPTION_KEY=${ENCRYPTION_KEY}',
                 'GOLOGIN_API_TOKEN=${GOLOGIN_API_TOKEN}',
+                'GALEN_API_TOKEN=${GALEN_API_TOKEN}',
                 f'REDIS_HOST={redis_name}',
                 f'REDIS_PORT={redis_internal_port}',
                 'SYNC_INTERVAL=14400',  # 4 hours
@@ -287,6 +334,7 @@ def generate_docker_compose(
                 'DATABASE_URL=${DATABASE_URL}',
                 'ENCRYPTION_KEY=${ENCRYPTION_KEY}',
                 'GOLOGIN_API_TOKEN=${GOLOGIN_API_TOKEN}',
+                'GALEN_API_TOKEN=${GALEN_API_TOKEN}',
                 f'REDIS_HOST={redis_name}',
                 f'REDIS_PORT={redis_internal_port}',
                 'CONCURRENT_FANS=10',
@@ -326,6 +374,7 @@ def generate_docker_compose(
                 'DATABASE_URL=${DATABASE_URL}',
                 'ENCRYPTION_KEY=${ENCRYPTION_KEY}',
                 'GOLOGIN_API_TOKEN=${GOLOGIN_API_TOKEN}',
+                'GALEN_API_TOKEN=${GALEN_API_TOKEN}',
                 f'REDIS_HOST={redis_name}',
                 f'REDIS_PORT={redis_internal_port}',
                 'CONCURRENT_FANS=10',
@@ -395,6 +444,7 @@ def generate_docker_compose(
         'container_name': f'{container_prefix}-gologin-keepalive',
         'environment': [
             'GOLOGIN_API_TOKEN=${GOLOGIN_API_TOKEN}',
+            'GALEN_API_TOKEN=${GALEN_API_TOKEN}',
             'DATABASE_URL=${DATABASE_URL}',
             'ENCRYPTION_KEY=${ENCRYPTION_KEY}',
             'PING_INTERVAL=300',  # 5 minutes
@@ -447,6 +497,39 @@ def generate_docker_compose(
     return output_file
 
 
+async def load_creators_with_fallback(
+    auth_file: str = 'auth_multi.json',
+    database_url: Optional[str] = None,
+    encryption_key: Optional[str] = None
+) -> tuple[List[dict], str]:
+    """Load creators from database first, fall back to JSON file.
+
+    :param auth_file: Path to fallback authentication JSON file.
+    :param database_url: PostgreSQL connection string.
+    :param encryption_key: Fernet encryption key.
+    :return: Tuple of (creators list, source description).
+    """
+    database_url = database_url or os.getenv('DATABASE_URL')
+    encryption_key = encryption_key or os.getenv('ENCRYPTION_KEY')
+
+    if database_url and encryption_key:
+        try:
+            creators = await load_creators_from_database(database_url, encryption_key)
+            if creators:
+                return creators, "database (creator_credentials table)"
+            else:
+                print("  Database returned no active credentials, falling back to JSON file")
+        except Exception as e:
+            print(f"  Database connection failed: {e}")
+            print("  Falling back to JSON file")
+
+    if Path(auth_file).exists():
+        creators = load_creators_from_auth(auth_file)
+        return creators, f"JSON file ({auth_file})"
+
+    return [], "none"
+
+
 def main() -> None:
     """Main function to generate docker-compose file from command line."""
     import sys
@@ -466,18 +549,21 @@ def main() -> None:
     print("Docker Compose Generator")
     print("=" * 60)
     print(f"Mode: {mode}")
-    print(f"Auth file: {auth_file}")
+    print(f"Fallback auth file: {auth_file}")
 
-    # Load creators
+    # Load creators from database (primary) or JSON file (fallback)
     try:
-        creators = load_creators_from_auth(auth_file)
+        creators, source = asyncio.run(load_creators_with_fallback(auth_file))
+        print(f"Source: {source}")
         print(f"Found {len(creators)} creator(s)\n")
     except Exception as e:
-        print(f"✗ Error loading auth file: {e}")
+        print(f"✗ Error loading creators: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
     if not creators:
-        print("✗ No creators found in auth file")
+        print("✗ No creators found in database or auth file")
         sys.exit(1)
 
     # Generate compose file
