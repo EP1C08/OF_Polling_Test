@@ -18,6 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert
 from models.db_models import Base, Message, Bundle, BundleItem, BundleFanInteraction, BundleAnalytics
 from modules.logger import setup_logger
+from modules.db_credential_loader import load_credentials_from_db
 
 
 class DatabaseWorker:
@@ -185,6 +186,28 @@ class DatabaseWorker:
             return creators
         except Exception as e:
             self.logger.error(f"✗ Failed to load creators: {str(e)}")
+            return []
+
+    async def load_creators_from_database(self) -> List[Dict]:
+        """Load creator list from creator_credentials database table.
+
+        :return: List of creator dictionaries with id and name
+        """
+        try:
+            credentials = await load_credentials_from_db()
+            creators = []
+            for cred in credentials:
+                creator_id = cred.get('id')
+                creator_name = cred.get('username') or cred.get('name') or str(creator_id)
+                if creator_id:
+                    creators.append({
+                        'id': str(creator_id),
+                        'name': creator_name
+                    })
+            self.logger.info(f"✓ Loaded {len(creators)} creator(s) from database")
+            return creators
+        except Exception as e:
+            self.logger.error(f"✗ Failed to load creators from database: {str(e)}")
             return []
 
     def _get_list_key(self, creator_id: str, list_type: str) -> str:
@@ -550,11 +573,15 @@ class DatabaseWorker:
                 self.logger.error("Failed to connect to Redis")
                 sys.exit(1)
 
-            auth_file = os.getenv('AUTH_FILE', '/app/auth_multi.json')
-            creators = await self.load_creators_from_auth(auth_file)
+            # Try loading from database first, fallback to auth_multi.json
+            creators = await self.load_creators_from_database()
+            if not creators:
+                self.logger.warning("No creators from database, falling back to auth_multi.json")
+                auth_file = os.getenv('AUTH_FILE', '/app/auth_multi.json')
+                creators = await self.load_creators_from_auth(auth_file)
 
             if not creators:
-                self.logger.error("No creators found in auth file")
+                self.logger.error("No creators found in database or auth file")
                 sys.exit(1)
 
             self.logger.info(f"Starting {len(creators)} workers: {', '.join([c['name'] for c in creators])}")

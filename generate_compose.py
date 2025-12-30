@@ -408,6 +408,7 @@ def generate_docker_compose(
         'container_name': f'{container_prefix}-db-worker',
         'environment': [
             'DATABASE_URL=${DATABASE_URL}',
+            'ENCRYPTION_KEY=${ENCRYPTION_KEY}',
             f'REDIS_HOST={redis_name}',
             f'REDIS_PORT={redis_internal_port}',
             'AUTH_FILE=/app/auth_multi.json',
