@@ -29,6 +29,54 @@ from ultima_scraper_api.apis.onlyfans.classes.extras import AuthDetails
 GALEN_CREATORS = ["Juno", "avabarham2", "Luna", "luna"]
 
 
+async def fetch_all_chats_paginated(authed, logger) -> list:
+    """Fetch ALL chats using manual pagination.
+
+    The library's get_chats() may not return all chats, so we use
+    direct API calls with pagination to ensure we get everything.
+
+    :param authed: Authenticated OnlyFans user object.
+    :param logger: Logger instance.
+    :return: List of user dictionaries with id, username, name.
+    """
+    users = []
+    offset = 0
+    limit = 100
+    page = 1
+
+    while True:
+        logger.info(f"  Fetching chats page {page} (offset: {offset})...")
+
+        link = f"https://onlyfans.com/api2/v2/chats?limit={limit}&offset={offset}&order=recent"
+        response = await authed.auth_session.json_request(link)
+
+        if not response or "list" not in response:
+            logger.warning(f"  No response or empty list on page {page}")
+            break
+
+        chat_list = response.get("list", [])
+        has_more = response.get("hasMore", False)
+
+        logger.info(f"  Page {page}: {len(chat_list)} chats, hasMore={has_more}")
+
+        for chat in chat_list:
+            with_user = chat.get("withUser", {})
+            user_data = {
+                "id": with_user.get("id"),
+                "username": with_user.get("username") or f"u{with_user.get('id')}",
+                "name": with_user.get("name") or with_user.get("username") or f"User {with_user.get('id')}"
+            }
+            users.append(user_data)
+
+        if not has_more:
+            break
+
+        offset += limit
+        page += 1
+
+    return users
+
+
 def get_gologin_token(creator_name: str) -> str:
     """Get the correct GoLogin API token for a creator.
 
@@ -350,12 +398,10 @@ async def main() -> None:
             total_users = len(conversations_data)
         except FileNotFoundError as e:
             logger.info(f"⚠ {str(e)}")
-            logger.info(f"Falling back to API get_chats()...")
-            chats = await authed.get_chats()
-            logger.info(f"✓ Found {len(chats)} conversation(s) from API")
-            # Convert to same format as JSON for consistency
-            conversations_data = [{'id': chat.user.id, 'username': chat.user.username, 'name': chat.user.name} for chat in chats]
+            logger.info(f"Falling back to API (fetching ALL chats with pagination)...")
+            conversations_data = await fetch_all_chats_paginated(authed, logger)
             total_users = len(conversations_data)
+            logger.info(f"✓ Found {total_users} conversation(s) from API")
 
         # TEST MODE: Limit number of fans to process
         test_limit = os.getenv('TEST_LIMIT')
