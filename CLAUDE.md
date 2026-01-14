@@ -2,6 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Documentation
+
+For detailed documentation, see the `docs/` directory:
+- [QUICKSTART.md](docs/QUICKSTART.md) - Getting started guide
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md) - System architecture and data flow
+- [API_REFERENCE.md](docs/API_REFERENCE.md) - Module and function reference
+
 ## Project Overview
 
 OnlyFans message polling system built with Python that fetches messages and bundles from OnlyFans creators' conversations using the `ultima-scraper-api`. The system uses a producer-consumer architecture with Redis Lists for distributed message processing and exports data to PostgreSQL database.
