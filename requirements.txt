@@ -25,6 +25,9 @@ sqlalchemy[asyncio]>=2.0.0
 # Encryption (for database credentials)
 cryptography>=41.0.0
 
+# File locking (for pending fans JSON)
+filelock>=3.12.0
+
 # YAML for docker-compose generation
 pyyaml>=6.0
 

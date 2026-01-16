@@ -263,6 +263,7 @@ def generate_docker_compose(
             ],
             'volumes': [
                 './auth_multi.json:/app/auth_multi.json:ro',
+                './test_pending_fans:/app/pending_fans' if is_test else './pending_fans:/app/pending_fans',
                 './test_logs:/app/logs' if is_test else './logs:/app/logs'
             ],
             'depends_on': [redis_name, db_worker_service],
@@ -399,6 +400,51 @@ def generate_docker_compose(
             }
         }
 
+        # Pending Fan Processor service (processes fans after 24h waiting period)
+        pending_fan_processor_service = f'pending-fan-processor-{creator_name}'
+        compose_dict['services'][pending_fan_processor_service] = {
+            'build': {
+                'context': '.',
+                'dockerfile': 'Dockerfile.pending_fan_processor'
+            },
+            'container_name': f'{container_prefix}-pending-fan-processor-{creator_name}',
+            'environment': [
+                f'CREATOR_ID={creator_id}',
+                f'CREATOR_NAME={creator["name"]}',
+                'DATABASE_URL=${DATABASE_URL}',
+                'ENCRYPTION_KEY=${ENCRYPTION_KEY}',
+                'GOLOGIN_API_TOKEN=${GOLOGIN_API_TOKEN}',
+                'GALEN_API_TOKEN=${GALEN_API_TOKEN}',
+                f'REDIS_HOST={redis_name}',
+                f'REDIS_PORT={redis_internal_port}',
+                'PENDING_CHECK_INTERVAL=300',  # Check every 5 minutes
+                'MIN_MESSAGE_AGE_HOURS=24',
+                # Timewaster detection settings
+                'TW_ENABLED=true',
+                'TW_MAX_SPEND=50.0',
+                'TW_MIN_MESSAGES=50',
+                'TW_MAX_RPM=0.05'
+            ],
+            'volumes': [
+                './auth_multi.json:/app/auth_multi.json:ro',
+                './test_pending_fans:/app/pending_fans' if is_test else './pending_fans:/app/pending_fans',
+                './test_logs:/app/logs' if is_test else './logs:/app/logs'
+            ],
+            'depends_on': [redis_name, db_worker_service],
+            'restart': 'unless-stopped',  # Auto-restart on failure
+            'networks': [network_name],
+            'deploy': {
+                'resources': {
+                    'limits': {
+                        'memory': '512M'
+                    },
+                    'reservations': {
+                        'memory': '128M'
+                    }
+                }
+            }
+        }
+
     # Database Worker service (multi-creator support)
     compose_dict['services'][db_worker_service] = {
         'build': {
@@ -489,11 +535,12 @@ def generate_docker_compose(
     print(f"  Fan Sync Workers: {len(creators)} containers (every 4 hours)")
     print(f"  New Fan Processors: {len(creators)} containers (full history fetch)")
     print(f"  Known Fan Processors: {len(creators)} containers (incremental fetch)")
-    print(f"  Total: {3 + len(creators) * 5} containers")
+    print(f"  Pending Fan Processors: {len(creators)} containers (24h delayed processing)")
+    print(f"  Total: {3 + len(creators) * 6} containers")
     print(f"\nCreators: {', '.join([c['name'] for c in creators])}")
     print(f"\nUsage:")
     print(f"  Initial setup:  docker-compose -f {output_file} up redis gologin-keepalive producer-* db_worker --build -d")
-    print(f"  Real-time mode: docker-compose -f {output_file} up redis gologin-keepalive db_worker listener-* fan-sync-* new-fan-processor-* known-fan-processor-* --build -d")
+    print(f"  Real-time mode: docker-compose -f {output_file} up redis gologin-keepalive db_worker listener-* fan-sync-* new-fan-processor-* known-fan-processor-* pending-fan-processor-* --build -d")
 
     return output_file
 

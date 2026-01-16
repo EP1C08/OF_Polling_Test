@@ -25,6 +25,7 @@ from modules.redis_producer import RedisProducer
 from modules.db_credential_loader import load_credentials_from_db
 from modules.message_age_filter import is_message_old_enough
 from modules.timewaster import TimewasterHandler
+from modules.pending_fans_manager import PendingFansManager
 
 # Creators that use GALEN_API_TOKEN (different GoLogin account)
 GALEN_CREATORS = ["Juno", "avabarham2", "Luna", "luna"]
@@ -73,6 +74,7 @@ class WebSocketListener:
         self.redis_producer: Optional[RedisProducer] = None
         self.gologin_profile_id: Optional[str] = None
         self.timewaster_handler: Optional[TimewasterHandler] = None
+        self.pending_fans_manager: Optional[PendingFansManager] = None
 
     async def initialize(self) -> bool:
         """Initialize all components.
@@ -159,6 +161,17 @@ class WebSocketListener:
                 self.logger.error("Failed to initialize cutoff manager")
                 return False
             self.logger.info("Cutoff manager initialized")
+
+            # Initialize pending fans manager for 24h delayed processing
+            min_age_hours = int(os.getenv('MIN_MESSAGE_AGE_HOURS', '24'))
+            self.pending_fans_manager = PendingFansManager(
+                creator_id=self.creator_id,
+                creator_name=self.creator_name,
+                pending_dir='/app/pending_fans',
+                min_age_hours=min_age_hours,
+                logger=self.logger
+            )
+            self.logger.info(f"Pending fans manager initialized (min_age: {min_age_hours}h)")
 
             self.logger.info("All components initialized")
             return True
@@ -254,14 +267,25 @@ class WebSocketListener:
                 if isinstance(message_data, dict):
                     message_created_at = message_data.get('createdAt') or message_data.get('created_at')
 
-            # Check 24-hour rule: skip messages that are too recent
+            # Check 24-hour rule: if message is too recent, add to pending list
             min_age_hours = int(os.getenv('MIN_MESSAGE_AGE_HOURS', '24'))
             if not is_message_old_enough(message_created_at, min_age_hours):
-                self.logger.info(
-                    f"Fan {fan_id} message < {min_age_hours}h old, skipping (will process later)"
-                )
+                # Add to pending fans list - will be processed after 24h
+                if message_created_at and self.pending_fans_manager:
+                    is_new = self.pending_fans_manager.add_or_update_fan(fan_id, message_created_at)
+                    action = "Added" if is_new else "Updated"
+                    stats = self.pending_fans_manager.get_stats()
+                    self.logger.info(
+                        f"{action} fan {fan_id} to pending list (message < {min_age_hours}h old) - "
+                        f"Total pending: {stats['total']}, Ready: {stats['ready']}, Waiting: {stats['waiting']}"
+                    )
+                else:
+                    self.logger.warning(
+                        f"Fan {fan_id} message < {min_age_hours}h old but no timestamp available"
+                    )
                 return
 
+            # Message is >= 24h old, route to queue immediately
             asyncio.create_task(self._route_fan_to_queue(fan_id))
 
         except Exception as e:

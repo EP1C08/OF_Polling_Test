@@ -56,22 +56,23 @@ class DatabaseCredentialLoader:
         logger.info("Database credential loader initialized")
 
     async def load_credential_by_model_id(self, model_id: str) -> Optional[dict]:
-        """Load and decrypt a single creator credential by model_id.
+        """Load and decrypt a single creator credential by model_id or account_name.
 
-        :param model_id: OnlyFans model/creator ID.
+        :param model_id: OnlyFans model/creator ID or account name.
         :return: Decrypted credential dictionary with auth details, or None if not found.
         """
         async with self.async_session() as session:
             try:
                 stmt = select(CreatorCredential).where(
-                    (CreatorCredential.model_id == model_id) &
+                    ((CreatorCredential.model_id == model_id) |
+                     (CreatorCredential.account_name == model_id)) &
                     (CreatorCredential.status == 'active')
                 )
                 result = await session.execute(stmt)
                 credential = result.scalar_one_or_none()
 
                 if not credential:
-                    logger.warning(f"No active credential found for model_id: {model_id}")
+                    logger.warning(f"No active credential found for model_id/account_name: {model_id}")
                     return None
 
                 return self._decrypt_credential(credential)

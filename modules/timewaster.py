@@ -1,7 +1,7 @@
 """Timewaster Handler - Live API Spend Calculation and Marking.
 
 Calculates fan spend using Live API (proven accurate), then marks timewasters:
-1. Updates display name to "AI - Timewaster {original_name}"
+1. Updates display name to "{original_name} Timewaster"
 2. Adds fan to "time waster" collection
 
 Timewaster Criteria:
@@ -526,7 +526,7 @@ class TimewasterHandler:
         added_to_collection = False
 
         try:
-            new_display_name = f"{self.config.display_name_prefix} {original_display_name}"
+            new_display_name = f"{original_display_name} - Timewaster"
             display_name_updated = await self.update_display_name(fan_id, new_display_name)
 
             if not display_name_updated:
